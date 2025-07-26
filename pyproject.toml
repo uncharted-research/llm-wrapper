@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-wrapper"
+version = "0.1.0"
+description = "A Python wrapper around LLMs (Gemini, Claude) with rate limiting and unified interface"
+readme = "README.md"
+license = {text = "Proprietary - Exclusive use by uncharted group GmbH"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Christoph Mayer"},
+]
+keywords = ["llm", "ai", "gemini", "claude", "rate-limiting"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "google-genai>=1.27.0",
+    "pillow>=11.3.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/christophmayer/llm-wrapper"
+Documentation = "https://github.com/christophmayer/llm-wrapper"
+Repository = "https://github.com/christophmayer/llm-wrapper.git"
+Issues = "https://github.com/christophmayer/llm-wrapper/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0",
+    "isort>=5.0",
+    "mypy>=1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["llm_wrapper"]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.isort]
+profile = "black"
+line_length = 88
