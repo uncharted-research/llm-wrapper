@@ -15,7 +15,6 @@ from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
 
-
 class LLMManager:
     """Singleton class for managing LLM calls with rate limiting."""
     
@@ -56,11 +55,17 @@ class LLMManager:
         
         self._initialized = True
     
-    def _clean_old_entries(self, counter_deque: deque, window_seconds: int = 60):
+    def _clean_old_entries(self, counter_deque: deque, window_seconds: int = 60, is_tokens: bool = False):
         """Remove entries older than the specified window."""
         current_time = time.time()
-        while counter_deque and counter_deque[0] <= current_time - window_seconds:
-            counter_deque.popleft()
+        if is_tokens:
+            # For tokens: entries are (timestamp, token_count) tuples
+            while counter_deque and counter_deque[0][0] <= current_time - window_seconds:
+                counter_deque.popleft()
+        else:
+            # For calls: entries are just timestamps
+            while counter_deque and counter_deque[0] <= current_time - window_seconds:
+                counter_deque.popleft()
     
     def _check_rate_limits(self, family: str, model: str, estimated_tokens: int) -> bool:
         """Check if the request would exceed rate limits."""
@@ -77,7 +82,7 @@ class LLMManager:
             # Clean old entries
             self._clean_old_entries(counters['calls'])
             if tokens_limit:
-                self._clean_old_entries(counters['tokens'])
+                self._clean_old_entries(counters['tokens'], is_tokens=True)
             
             # Check calls limit
             if len(counters['calls']) >= calls_limit:
@@ -85,7 +90,7 @@ class LLMManager:
             
             # Check tokens limit (if applicable)
             if tokens_limit:
-                current_tokens = sum(counters['tokens'])
+                current_tokens = sum(token_count for timestamp, token_count in counters['tokens'])
                 if current_tokens + estimated_tokens > tokens_limit:
                     return False
             
@@ -100,7 +105,7 @@ class LLMManager:
         
         counters['calls'].append(current_time)
         if tokens_used > 0:
-            counters['tokens'].append(tokens_used)
+            counters['tokens'].append((current_time, tokens_used))
     
     def _estimate_tokens(self, prompt: str) -> int:
         """Estimate tokens from prompt text."""
@@ -256,6 +261,8 @@ class LLMManager:
                         return True, data_dict
                     except json.JSONDecodeError:
                         return True, {"text": text_response}
+                else:
+                    return True, {"text": text_response}
                 
             except Exception as e:
                 return False, str(e)
@@ -299,6 +306,8 @@ class LLMManager:
                         return True, data_dict
                     except json.JSONDecodeError:
                         return True, {"text": text_response}
+                else:
+                    return True, {"text": text_response}
                 
             except Exception as e:
                 return False, str(e)
@@ -351,7 +360,7 @@ class LLMManager:
             # Clean old entries
             self._clean_old_entries(counters['calls'])
             if len(limits) > 1:
-                self._clean_old_entries(counters['tokens'])
+                self._clean_old_entries(counters['tokens'], is_tokens=True)
             
             status = {
                 "calls_used": len(counters['calls']),
@@ -360,7 +369,7 @@ class LLMManager:
             }
             
             if len(limits) > 1:  # Has token limit
-                tokens_used = sum(counters['tokens'])
+                tokens_used = sum(token_count for timestamp, token_count in counters['tokens'])
                 status.update({
                     "tokens_used": tokens_used,
                     "tokens_limit": limits[1],

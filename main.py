@@ -9,7 +9,8 @@ Make sure to set your GEMINI_API_KEY environment variable before running.
 import asyncio
 import os
 from llm_wrapper import get_llm_manager
-
+from dotenv import load_dotenv
+load_dotenv()
 
 async def demo_text_generation():
     """Demonstrate basic text generation."""
@@ -32,15 +33,36 @@ async def demo_text_generation():
         print(f"❌ Error: {result}")
     
     print()
-
-
-async def demo_rate_limits():
-    """Demonstrate rate limit monitoring."""
-    print("📊 Demo: Rate Limit Status")
+    
+async def demo_json_generation():
+    """Demonstrate JSON generation."""
+    print("🤖 Demo: JSON Generation")
     print("-" * 40)
     
     llm = get_llm_manager()
-    status = llm.get_rate_limit_status("gemini", "gemini-2.0-flash")
+    
+    success, result = await llm.call_llm(
+        family="gemini",
+        model="gemini-2.5-flash",
+        prompt="Generate a JSON object with a random number between 1 and 100",
+        return_json=True
+    )
+    
+    if success:
+        print("Generated JSON:")
+        print(result)
+    else:
+        print(f"❌ Error: {result}")
+    
+    print()
+
+async def demo_rate_limits(label="Rate Limit Status"):
+    """Demonstrate rate limit monitoring."""
+    print(f"📊 Demo: {label}")
+    print("-" * 40)
+    
+    llm = get_llm_manager()
+    status = llm.get_rate_limit_status("gemini", "gemini-2.5-flash")
     
     print(f"Calls used: {status.get('calls_used', 0)}/{status.get('calls_limit', 'Unknown')}")
     print(f"Calls remaining: {status.get('calls_remaining', 'Unknown')}")
@@ -65,9 +87,11 @@ async def main():
         return
     
     try:
-        await demo_rate_limits()
+        await demo_rate_limits("Rate Limits BEFORE Any Calls")
         await demo_text_generation()
-        await demo_rate_limits()
+        await demo_rate_limits("Rate Limits AFTER Text Generation")
+        await demo_json_generation()
+        await demo_rate_limits("Rate Limits AFTER JSON Generation")
         
         print("✅ Demo completed successfully!")
         
