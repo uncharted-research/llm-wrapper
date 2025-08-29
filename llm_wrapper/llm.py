@@ -266,6 +266,9 @@ class LLMManager:
                 
             except Exception as e:
                 return False, str(e)
+            
+            # This should never be reached, but adding for safety
+            return False, "Unexpected error: no return path taken"
         
         return await asyncio.to_thread(sync_call)
     
@@ -311,6 +314,9 @@ class LLMManager:
                 
             except Exception as e:
                 return False, str(e)
+            
+            # This should never be reached, but adding for safety
+            return False, "Unexpected error: no return path taken"
         
         return await asyncio.to_thread(sync_call)
     
