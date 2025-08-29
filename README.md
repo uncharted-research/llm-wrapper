@@ -16,7 +16,7 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 ### From GitHub (latest)
 
 ```bash
-uv add git+https://github.com/christophmayer/llm-wrapper.git
+uv add git+https://github.com/uncharted-research/llm-wrapper.git
 ```
 
 ### From PyPI (when published)
