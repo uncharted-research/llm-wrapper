@@ -14,6 +14,7 @@ from google.genai.types import Part
 from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
+import anthropic
 
 class LLMManager:
     """Singleton class for managing LLM calls with rate limiting."""
@@ -28,6 +29,15 @@ class LLMManager:
         "gemini-2.0-flash": (800, 1_000_000),
         "imagen-3.0-generate-002": (5,)  # Only calls per minute limit
     }
+    
+    dict_claude_limits = {
+        "claude-sonnet-4-20250514": (40, 20_000),  # Conservative limits
+        "claude-opus-4-1-20250805": (40, 20_000),  # Conservative limits
+    }
+    
+    # Default models
+    DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
     
     def __new__(cls):
         if cls._instance is None:
@@ -46,6 +56,7 @@ class LLMManager:
         
         # Initialize clients
         self.gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         
         # Rate limiting counters: family -> model -> {'calls': deque, 'tokens': deque}
         self.counters = defaultdict(lambda: defaultdict(lambda: {
@@ -69,34 +80,40 @@ class LLMManager:
     
     def _check_rate_limits(self, family: str, model: str, estimated_tokens: int) -> bool:
         """Check if the request would exceed rate limits."""
-        if family.lower() == "gemini":
+        family_lower = family.lower()
+        
+        if family_lower == "gemini":
             if model not in self.dict_gemini_limits:
                 raise ValueError(f"Unknown Gemini model: {model}")
-            
             limits = self.dict_gemini_limits[model]
-            calls_limit = limits[0]
-            tokens_limit = limits[1] if len(limits) > 1 else None
-            
-            counters = self.counters[family][model]
-            
-            # Clean old entries
-            self._clean_old_entries(counters['calls'])
-            if tokens_limit:
-                self._clean_old_entries(counters['tokens'], is_tokens=True)
-            
-            # Check calls limit
-            if len(counters['calls']) >= calls_limit:
-                return False
-            
-            # Check tokens limit (if applicable)
-            if tokens_limit:
-                current_tokens = sum(token_count for timestamp, token_count in counters['tokens'])
-                if current_tokens + estimated_tokens > tokens_limit:
-                    return False
-            
-            return True
+        elif family_lower == "claude":
+            if model not in self.dict_claude_limits:
+                raise ValueError(f"Unknown Claude model: {model}")
+            limits = self.dict_claude_limits[model]
         else:
             raise ValueError(f"Family {family} not supported")
+        
+        calls_limit = limits[0]
+        tokens_limit = limits[1] if len(limits) > 1 else None
+        
+        counters = self.counters[family_lower][model]
+        
+        # Clean old entries
+        self._clean_old_entries(counters['calls'])
+        if tokens_limit:
+            self._clean_old_entries(counters['tokens'], is_tokens=True)
+        
+        # Check calls limit
+        if len(counters['calls']) >= calls_limit:
+            return False
+        
+        # Check tokens limit (if applicable)
+        if tokens_limit:
+            current_tokens = sum(token_count for timestamp, token_count in counters['tokens'])
+            if current_tokens + estimated_tokens > tokens_limit:
+                return False
+        
+        return True
     
     def _update_counters(self, family: str, model: str, tokens_used: int):
         """Update rate limiting counters."""
@@ -137,11 +154,7 @@ class LLMManager:
         """
         family = family.lower()
         
-        if family == "claude":
-            warnings.warn("Claude family has not been implemented yet", UserWarning)
-            return False, "Claude family not implemented"
-        
-        if family != "gemini":
+        if family not in ["gemini", "claude"]:
             return False, f"Unsupported family: {family}"
         
         estimated_tokens = self._estimate_tokens(prompt)
@@ -151,14 +164,21 @@ class LLMManager:
             return False, "Rate limit exceeded"
         
         try:
-            if file_path:
-                result = await self._call_gemini_with_file(
-                    model, prompt, file_path, max_tokens, temperature, return_json
-                )
-            else:
-                result = await self._call_gemini_with_prompt(
+            if family == "claude":
+                if file_path:
+                    return False, "Claude does not support file attachments in this implementation yet"
+                result = await self._call_claude_with_prompt(
                     model, prompt, max_tokens, temperature, return_json
                 )
+            else:  # gemini
+                if file_path:
+                    result = await self._call_gemini_with_file(
+                        model, prompt, file_path, max_tokens, temperature, return_json
+                    )
+                else:
+                    result = await self._call_gemini_with_prompt(
+                        model, prompt, max_tokens, temperature, return_json
+                    )
             
             # Update counters on successful call
             self._update_counters(family, model, estimated_tokens)
@@ -320,6 +340,53 @@ class LLMManager:
         
         return await asyncio.to_thread(sync_call)
     
+    async def _call_claude_with_prompt(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """Call Claude with text prompt only."""
+        def sync_call():
+            try:
+                kwargs = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens or 1024
+                }
+                
+                if temperature is not None:
+                    kwargs["temperature"] = temperature
+                
+                message = self.claude_client.messages.create(**kwargs)
+                
+                if not message.content or not message.content[0].text:
+                    return False, "No response from Claude"
+                
+                text_response = message.content[0].text.strip()
+                
+                # Try to parse as JSON if requested
+                if return_json:
+                    try:
+                        if text_response.startswith("```json"):
+                            text_response = text_response.removeprefix("```json").removesuffix("```").strip()
+                        data_dict = json.loads(text_response)
+                        return True, data_dict
+                    except json.JSONDecodeError:
+                        return True, {"text": text_response}
+                else:
+                    return True, {"text": text_response}
+                
+            except Exception as e:
+                return False, str(e)
+            
+            # This should never be reached, but adding for safety
+            return False, "Unexpected error: no return path taken"
+        
+        return await asyncio.to_thread(sync_call)
+    
     async def _generate_image_gemini(
         self,
         model: str,
@@ -359,32 +426,65 @@ class LLMManager:
     def get_rate_limit_status(self, family: str, model: str) -> Dict[str, Any]:
         """Get current rate limit status for a model."""
         family = family.lower()
+        
         if family == "gemini" and model in self.dict_gemini_limits:
             limits = self.dict_gemini_limits[model]
-            counters = self.counters[family][model]
-            
-            # Clean old entries
-            self._clean_old_entries(counters['calls'])
-            if len(limits) > 1:
-                self._clean_old_entries(counters['tokens'], is_tokens=True)
-            
-            status = {
-                "calls_used": len(counters['calls']),
-                "calls_limit": limits[0],
-                "calls_remaining": limits[0] - len(counters['calls'])
-            }
-            
-            if len(limits) > 1:  # Has token limit
-                tokens_used = sum(token_count for timestamp, token_count in counters['tokens'])
-                status.update({
-                    "tokens_used": tokens_used,
-                    "tokens_limit": limits[1],
-                    "tokens_remaining": limits[1] - tokens_used
-                })
-            
-            return status
+        elif family == "claude" and model in self.dict_claude_limits:
+            limits = self.dict_claude_limits[model]
+        else:
+            return {"error": f"Unknown model {model} for family {family}"}
         
-        return {"error": f"Unknown model {model} for family {family}"}
+        counters = self.counters[family][model]
+        
+        # Clean old entries
+        self._clean_old_entries(counters['calls'])
+        if len(limits) > 1:
+            self._clean_old_entries(counters['tokens'], is_tokens=True)
+        
+        status = {
+            "calls_used": len(counters['calls']),
+            "calls_limit": limits[0],
+            "calls_remaining": limits[0] - len(counters['calls'])
+        }
+        
+        if len(limits) > 1:  # Has token limit
+            tokens_used = sum(token_count for timestamp, token_count in counters['tokens'])
+            status.update({
+                "tokens_used": tokens_used,
+                "tokens_limit": limits[1],
+                "tokens_remaining": limits[1] - tokens_used
+            })
+        
+        return status
+    
+    async def call_claude(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Convenience method to call Claude with Sonnet as default model.
+        
+        Args:
+            prompt: Text prompt
+            model: Model name (defaults to Sonnet)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            return_json: Whether to return the response as a JSON object
+        Returns:
+            Tuple of (success: bool, result: dict or error_message: str)
+        """
+        return await self.call_llm(
+            family="claude",
+            model=model or self.DEFAULT_CLAUDE_MODEL,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            return_json=return_json
+        )
 
 
 # Convenience function to get the singleton instance

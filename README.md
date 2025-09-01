@@ -4,11 +4,12 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 
 ## Features
 
-- **Unified Interface**: Single API for multiple LLM providers
+- **Unified Interface**: Single API for multiple LLM providers (Gemini and Claude)
 - **Rate Limiting**: Automatic rate limiting to prevent API quota exhaustion
 - **Async Support**: Full async/await support for concurrent operations
-- **File Support**: Handle text, images, and PDFs as input
+- **File Support**: Handle text, images, and PDFs as input (Gemini only)
 - **Image Generation**: Support for Gemini's Imagen models
+- **Claude Integration**: Full support for Claude Opus and Sonnet models
 - **Singleton Pattern**: Efficient resource management with automatic client reuse
 
 ## Installation
@@ -17,6 +18,10 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 
 ```bash
 uv add git+https://github.com/uncharted-research/llm-wrapper.git
+```
+
+```bash
+pip install --upgrade --force-reinstall git+https://github.com/uncharted-research/llm-wrapper.git
 ```
 
 ### From PyPI (when published)
@@ -95,15 +100,63 @@ async def generate_image():
 asyncio.run(generate_image())
 ```
 
+### Using Claude Models
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def use_claude():
+    llm = get_llm_manager()
+    
+    # Use Claude with default model (Sonnet)
+    success, result = await llm.call_claude(
+        prompt="Write a haiku about programming",
+        temperature=0.7
+    )
+    
+    if success:
+        print(result["text"])
+    
+    # Use specific Claude model (Opus)
+    success, result = await llm.call_llm(
+        family="claude",
+        model="claude-opus-4-1-20250805",
+        prompt="Explain machine learning",
+        max_tokens=200
+    )
+    
+    if success:
+        print(result["text"])
+    
+    # Get JSON response from Claude
+    success, result = await llm.call_claude(
+        prompt="Generate a JSON object with name and age fields",
+        return_json=True
+    )
+    
+    if success:
+        print(result)  # Will be a parsed dict
+
+asyncio.run(use_claude())
+```
+
 ### Rate Limit Monitoring
 
 ```python
 from llm_wrapper import get_llm_manager
 
 llm = get_llm_manager()
+
+# Check Gemini limits
 status = llm.get_rate_limit_status("gemini", "gemini-2.0-flash")
-print(f"API calls remaining: {status['calls_remaining']}")
-print(f"Tokens remaining: {status['tokens_remaining']}")
+print(f"Gemini - API calls remaining: {status['calls_remaining']}")
+print(f"Gemini - Tokens remaining: {status['tokens_remaining']}")
+
+# Check Claude limits
+status = llm.get_rate_limit_status("claude", "claude-sonnet-4-20250514")
+print(f"Claude - API calls remaining: {status['calls_remaining']}")
+print(f"Claude - Tokens remaining: {status['tokens_remaining']}")
 ```
 
 ## Supported Models
@@ -117,7 +170,8 @@ print(f"Tokens remaining: {status['tokens_remaining']}")
 
 ### Claude Models
 
-*Coming soon*
+- `claude-sonnet-4-20250514`: 50 calls/min, 300K tokens/min (default)
+- `claude-opus-4-1-20250805`: 50 calls/min, 300K tokens/min
 
 ## Configuration
 
@@ -127,6 +181,7 @@ Create a `.env` file in your project root with the following variables:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
 The package automatically loads environment variables from the `.env` file using `python-dotenv`.
@@ -140,7 +195,7 @@ cp env.example .env
 ### API Keys Setup
 
 1. **Gemini**: Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. **Claude**: *Coming soon*
+2. **Claude**: Get your API key from [Anthropic Console](https://console.anthropic.com/)
 
 ### Example .env file
 
@@ -148,8 +203,8 @@ cp env.example .env
 # Google AI Studio API Key
 GEMINI_API_KEY=AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890
 
-# Future: Claude API Key (when implemented)
-# CLAUDE_API_KEY=your_claude_api_key_here
+# Anthropic API Key
+ANTHROPIC_API_KEY=sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
 
 ## Development
