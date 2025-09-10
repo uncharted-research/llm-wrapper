@@ -134,6 +134,8 @@ class LLMManager:
         model: str,
         prompt: str,
         file_path: Optional[Union[str, Path]] = None,
+        image_data: Optional[bytes] = None,
+        image_mime_type: str = "image/jpeg",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         return_json: bool = False
@@ -145,7 +147,9 @@ class LLMManager:
             family: LLM family ('Gemini' or 'Claude')
             model: Model name
             prompt: Text prompt
-            file_path: Optional file to include
+            file_path: Optional file to include (for Gemini only)
+            image_data: Optional image bytes to include (for Gemini only)
+            image_mime_type: MIME type of the image data (default: "image/jpeg")
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             return_json: Whether to return the response as a JSON object
@@ -165,13 +169,18 @@ class LLMManager:
         
         try:
             if family == "claude":
-                if file_path:
-                    return False, "Claude does not support file attachments in this implementation yet"
+                if file_path or image_data:
+                    return False, "Claude does not support file or image attachments in this implementation yet"
                 result = await self._call_claude_with_prompt(
                     model, prompt, max_tokens, temperature, return_json
                 )
             else:  # gemini
-                if file_path:
+                if image_data is not None:
+                    # Image data takes precedence over file_path
+                    result = await self._call_gemini_with_image_data(
+                        model, prompt, image_data, image_mime_type, max_tokens, temperature, return_json
+                    )
+                elif file_path:
                     result = await self._call_gemini_with_file(
                         model, prompt, file_path, max_tokens, temperature, return_json
                     )
@@ -289,6 +298,68 @@ class LLMManager:
             
             # This should never be reached, but adding for safety
             return False, "Unexpected error: no return path taken"
+        
+        return await asyncio.to_thread(sync_call)
+    
+    async def _call_gemini_with_image_data(
+        self,
+        model: str,
+        prompt: str,
+        image_data: bytes,
+        mime_type: str = "image/jpeg",
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """Call Gemini with image data bytes."""
+        def sync_call():
+            try:
+                # Validate image_data
+                if not image_data or len(image_data) == 0:
+                    return False, "Image data is empty"
+                
+                # Validate mime_type
+                supported_mime_types = ["image/jpeg", "image/png", "image/webp", "image/gif"]
+                if mime_type not in supported_mime_types:
+                    return False, f"Unsupported MIME type: {mime_type}. Supported types: {', '.join(supported_mime_types)}"
+                
+                config = types.GenerateContentConfig()
+                if max_tokens:
+                    config.max_output_tokens = max_tokens
+                if temperature is not None:
+                    config.temperature = temperature
+                
+                response = self.gemini_client.models.generate_content(
+                    model=model,
+                    contents=[
+                        Part.from_bytes(
+                            data=image_data,
+                            mime_type=mime_type,
+                        ),
+                        prompt,
+                    ],
+                    config=config if max_tokens or temperature is not None else None
+                )
+                
+                if not response.candidates[0].content.parts[0].text:
+                    return False, "No response from Gemini"
+                
+                text_response = response.candidates[0].content.parts[0].text.strip()
+                
+                # Try to parse as JSON, fall back to plain text
+                if return_json:
+                    try:
+                        if text_response.startswith("```json"):
+                            text_response = text_response.removeprefix("```json").removesuffix("```").strip()
+                        data_dict = json.loads(text_response)
+                        return True, data_dict
+                    except json.JSONDecodeError:
+                        return True, {"text": text_response}
+                else:
+                    return True, {"text": text_response}
+                
+            except Exception as e:
+                return False, str(e)
         
         return await asyncio.to_thread(sync_call)
     

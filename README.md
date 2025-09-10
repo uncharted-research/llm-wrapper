@@ -8,6 +8,7 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 - **Rate Limiting**: Automatic rate limiting to prevent API quota exhaustion
 - **Async Support**: Full async/await support for concurrent operations
 - **File Support**: Handle text, images, and PDFs as input (Gemini only)
+- **Image Data Support**: Send image bytes directly without file paths (Gemini only)
 - **Image Generation**: Support for Gemini's Imagen models
 - **Claude Integration**: Full support for Claude Opus and Sonnet models
 - **Singleton Pattern**: Efficient resource management with automatic client reuse
@@ -79,6 +80,33 @@ async def analyze_document():
 asyncio.run(analyze_document())
 ```
 
+### With Image Data (Gemini Only)
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def analyze_image_bytes():
+    llm = get_llm_manager()
+    
+    # Read image as bytes
+    with open("photo.jpg", "rb") as f:
+        img_bytes = f.read()
+    
+    success, result = await llm.call_llm(
+        family="gemini",
+        model="gemini-2.5-flash",
+        prompt="Describe what you see in this image",
+        image_data=img_bytes,
+        image_mime_type="image/jpeg"  # Supports: image/jpeg, image/png, image/webp, image/gif
+    )
+    
+    if success:
+        print(result["text"])
+
+asyncio.run(analyze_image_bytes())
+```
+
 ### Image Generation
 
 ```python
@@ -140,6 +168,47 @@ async def use_claude():
 
 asyncio.run(use_claude())
 ```
+
+### Working with Images
+
+The library supports two ways to send images to Gemini models:
+
+#### 1. Using File Path
+```python
+success, result = await llm.call_llm(
+    family="gemini",
+    model="gemini-2.5-flash",
+    prompt="Analyze this image",
+    file_path="image.jpg"
+)
+```
+
+#### 2. Using Image Data (bytes)
+```python
+# From file
+with open("image.jpg", "rb") as f:
+    image_bytes = f.read()
+
+# Or from PIL Image
+from PIL import Image
+from io import BytesIO
+
+img = Image.new('RGB', (100, 100), color='red')
+buffer = BytesIO()
+img.save(buffer, format='JPEG')
+image_bytes = buffer.getvalue()
+
+# Send to Gemini
+success, result = await llm.call_llm(
+    family="gemini",
+    model="gemini-2.5-flash",
+    prompt="What do you see?",
+    image_data=image_bytes,
+    image_mime_type="image/jpeg"  # or "image/png", "image/webp", "image/gif"
+)
+```
+
+**Note**: Image support is only available for Gemini models. Claude models will return an error if image_data or file_path is provided.
 
 ### Rate Limit Monitoring
 

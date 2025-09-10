@@ -56,6 +56,45 @@ async def demo_json_generation():
     
     print()
 
+async def demo_image_data():
+    """Demonstrate image_data parameter usage."""
+    print("🖼️ Demo: Image Data Parameter")
+    print("-" * 40)
+    
+    llm = get_llm_manager()
+    
+    # Create a simple test image
+    from PIL import Image
+    from io import BytesIO
+    
+    # Create a colorful test image
+    img = Image.new('RGB', (100, 100))
+    pixels = img.load()
+    for i in range(100):
+        for j in range(100):
+            pixels[i, j] = (i * 2, j * 2, (i + j) // 2)
+    
+    # Convert to bytes
+    img_bytes_io = BytesIO()
+    img.save(img_bytes_io, format='JPEG')
+    img_bytes = img_bytes_io.getvalue()
+    
+    success, result = await llm.call_llm(
+        family="gemini",
+        model="gemini-2.5-flash",
+        prompt="Describe the colors and pattern in this image",
+        image_data=img_bytes,
+        image_mime_type="image/jpeg"
+    )
+    
+    if success:
+        print("Generated description:")
+        print(result.get("text", result))
+    else:
+        print(f"❌ Error: {result}")
+    
+    print()
+
 async def demo_rate_limits(label="Rate Limit Status"):
     """Demonstrate rate limit monitoring."""
     print(f"📊 Demo: {label}")
@@ -92,6 +131,8 @@ async def main():
         await demo_rate_limits("Rate Limits AFTER Text Generation")
         await demo_json_generation()
         await demo_rate_limits("Rate Limits AFTER JSON Generation")
+        await demo_image_data()
+        await demo_rate_limits("Rate Limits AFTER Image Data")
         
         print("✅ Demo completed successfully!")
         
