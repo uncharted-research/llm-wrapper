@@ -298,11 +298,3 @@ uv run pytest
 uv run black .
 uv run isort .
 ```
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
