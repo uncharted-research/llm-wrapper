@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 import warnings
 from typing import Dict, Tuple, Optional, Union, Any
@@ -127,7 +128,35 @@ class LLMManager:
     def _estimate_tokens(self, prompt: str) -> int:
         """Estimate tokens from prompt text."""
         return len(prompt) // 3 if prompt else 0
-    
+
+    def _strip_markdown_json(self, text: str) -> str:
+        """
+        Strip markdown code block markers from JSON text.
+
+        Handles variations like:
+        - ```json\n{...}\n```
+        - ```JSON\n{...}\n```
+        - ``` json\n{...}\n```
+        - ```{...}```
+
+        Args:
+            text: Text that may contain markdown code blocks
+
+        Returns:
+            Text with markdown markers removed
+        """
+        if not text:
+            return text
+
+        # Remove opening markdown (handles variations like ```json, ```JSON, ``` json, etc.)
+        text = re.sub(r'^```\s*json\s*\n?', '', text, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Remove closing markdown
+        text = re.sub(r'\n?```\s*$', '', text, flags=re.MULTILINE)
+
+        # Clean up whitespace
+        return text.strip()
+
     async def call_llm(
         self,
         family: str,
@@ -331,7 +360,11 @@ class LLMManager:
                     # Include sources if grounding tools were enabled
                     result = {
                         "text": text_response,
-                        "sources": extracted_info["sources"]
+                        "sources": extracted_info["sources"],
+                        "grounding_enabled": {
+                            "google_search": enable_google_search,
+                            "url_context": enable_url_context
+                        }
                     }
 
                     # Add search queries if available
@@ -348,17 +381,34 @@ class LLMManager:
                 # Handle JSON parsing if requested
                 if return_json:
                     try:
-                        if text_response.startswith("```json"):
-                            text_response = text_response.removeprefix("```json").removesuffix("```").strip()
-                        data_dict = json.loads(text_response)
+                        # Strip markdown code blocks if present
+                        text_response = self._strip_markdown_json(text_response)
+                        parsed_data = json.loads(text_response)
 
                         # If grounding is enabled, merge the parsed JSON with sources
                         if enable_google_search or enable_url_context:
-                            data_dict["sources"] = extracted_info["sources"]
-                            if "search_queries" in extracted_info:
-                                data_dict["search_queries"] = extracted_info["search_queries"]
+                            # If parsed data is a list, wrap it in a dict with sources
+                            if isinstance(parsed_data, list):
+                                return True, {
+                                    "data": parsed_data,
+                                    "sources": extracted_info["sources"],
+                                    "search_queries": extracted_info.get("search_queries", []),
+                                    "grounding_enabled": {
+                                        "google_search": enable_google_search,
+                                        "url_context": enable_url_context
+                                    }
+                                }
+                            # If it's a dict, add sources directly
+                            elif isinstance(parsed_data, dict):
+                                parsed_data["sources"] = extracted_info["sources"]
+                                if "search_queries" in extracted_info:
+                                    parsed_data["search_queries"] = extracted_info["search_queries"]
+                                parsed_data["grounding_enabled"] = {
+                                    "google_search": enable_google_search,
+                                    "url_context": enable_url_context
+                                }
 
-                        return True, data_dict
+                        return True, parsed_data
                     except json.JSONDecodeError:
                         # Return the result as-is if JSON parsing fails
                         return True, result
@@ -459,7 +509,11 @@ class LLMManager:
                     # Include sources if grounding tools were enabled
                     result = {
                         "text": text_response,
-                        "sources": extracted_info["sources"]
+                        "sources": extracted_info["sources"],
+                        "grounding_enabled": {
+                            "google_search": enable_google_search,
+                            "url_context": enable_url_context
+                        }
                     }
 
                     # Add search queries if available
@@ -476,17 +530,34 @@ class LLMManager:
                 # Handle JSON parsing if requested
                 if return_json:
                     try:
-                        if text_response.startswith("```json"):
-                            text_response = text_response.removeprefix("```json").removesuffix("```").strip()
-                        data_dict = json.loads(text_response)
+                        # Strip markdown code blocks if present
+                        text_response = self._strip_markdown_json(text_response)
+                        parsed_data = json.loads(text_response)
 
                         # If grounding is enabled, merge the parsed JSON with sources
                         if enable_google_search or enable_url_context:
-                            data_dict["sources"] = extracted_info["sources"]
-                            if "search_queries" in extracted_info:
-                                data_dict["search_queries"] = extracted_info["search_queries"]
+                            # If parsed data is a list, wrap it in a dict with sources
+                            if isinstance(parsed_data, list):
+                                return True, {
+                                    "data": parsed_data,
+                                    "sources": extracted_info["sources"],
+                                    "search_queries": extracted_info.get("search_queries", []),
+                                    "grounding_enabled": {
+                                        "google_search": enable_google_search,
+                                        "url_context": enable_url_context
+                                    }
+                                }
+                            # If it's a dict, add sources directly
+                            elif isinstance(parsed_data, dict):
+                                parsed_data["sources"] = extracted_info["sources"]
+                                if "search_queries" in extracted_info:
+                                    parsed_data["search_queries"] = extracted_info["search_queries"]
+                                parsed_data["grounding_enabled"] = {
+                                    "google_search": enable_google_search,
+                                    "url_context": enable_url_context
+                                }
 
-                        return True, data_dict
+                        return True, parsed_data
                     except json.JSONDecodeError:
                         # Return the result as-is if JSON parsing fails
                         return True, result
@@ -516,52 +587,24 @@ class LLMManager:
             "grounding_metadata": None
         }
 
-        # Extract main text from all parts
-        text_parts = []
+        # Extract main text - use response.text if available (simpler and more reliable)
+        if hasattr(response, 'text') and response.text:
+            result["text"] = response.text.strip()
+
+        # Also need candidate reference for metadata extraction below
         if response.candidates and len(response.candidates) > 0:
             candidate = response.candidates[0]
 
-            # Get all text parts
-            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                for part in candidate.content.parts:
-                    if hasattr(part, 'text') and part.text:
-                        text_parts.append(part.text)
+            # If we didn't get text from response.text, extract from parts manually
+            if not result["text"]:
+                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                    text_parts = []
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            text_parts.append(part.text)
 
-            # Combine all text parts
-            result["text"] = "\n".join(text_parts).strip()
-
-            # Extract grounding attributions if available
-            if hasattr(candidate, 'grounding_attributions') and candidate.grounding_attributions:
-                for attribution in candidate.grounding_attributions:
-                    source_info = {}
-
-                    # Extract source URL
-                    if hasattr(attribution, 'source_id') and hasattr(attribution.source_id, 'grounding_passage'):
-                        grounding_passage = attribution.source_id.grounding_passage
-
-                        if hasattr(grounding_passage, 'passage_id'):
-                            # Extract URL from passage_id if it's formatted as a URL
-                            source_info['url'] = grounding_passage.passage_id
-
-                        # Extract snippet/content
-                        if hasattr(grounding_passage, 'content'):
-                            source_info['snippet'] = grounding_passage.content
-
-                    # Extract web reference if available
-                    if hasattr(attribution, 'source_id') and hasattr(attribution.source_id, 'web'):
-                        web_ref = attribution.source_id.web
-                        if hasattr(web_ref, 'uri'):
-                            source_info['url'] = web_ref.uri
-                        if hasattr(web_ref, 'title'):
-                            source_info['title'] = web_ref.title
-
-                    # Add segment information if available
-                    if hasattr(attribution, 'segment'):
-                        if hasattr(attribution.segment, 'text'):
-                            source_info['cited_text'] = attribution.segment.text
-
-                    if source_info:
-                        result["sources"].append(source_info)
+                    # Combine all text parts
+                    result["text"] = "\n".join(text_parts).strip() if text_parts else ""
 
             # Check for grounding support in the content itself
             # Sometimes Gemini includes sources directly in the response
@@ -604,9 +647,32 @@ class LLMManager:
                     # We could use this to provide more detailed citation information
                     pass
 
+            # Extract sources from url_context_metadata if available
+            # This is separate from grounding_metadata and provides URL retrieval status
+            if hasattr(candidate, 'url_context_metadata') and candidate.url_context_metadata:
+                ucm = candidate.url_context_metadata
+
+                # Extract URL metadata
+                if hasattr(ucm, 'url_metadata') and ucm.url_metadata:
+                    for url_meta in ucm.url_metadata:
+                        source_info = {}
+
+                        if hasattr(url_meta, 'retrieved_url'):
+                            source_info['url'] = url_meta.retrieved_url
+                            source_info['source_type'] = 'url_context'
+
+                        if hasattr(url_meta, 'url_retrieval_status'):
+                            source_info['retrieval_status'] = str(url_meta.url_retrieval_status)
+
+                        # Only add if URL was successfully retrieved
+                        if source_info.get('retrieval_status') == 'URL_RETRIEVAL_STATUS_SUCCESS':
+                            # Check if not already in sources (avoid duplicates)
+                            existing_urls = [s.get('url') for s in result["sources"]]
+                            if source_info.get('url') not in existing_urls:
+                                result["sources"].append(source_info)
+
         # Check if sources are embedded in the response text itself
         # Gemini sometimes includes citations and a source list at the end
-        import re
 
         # First, check for inline citations like [cite:1, 1~description]
         inline_citation_pattern = r'\[cite:(\d+),\s*\d+~[^\]]+\]'
@@ -747,7 +813,11 @@ class LLMManager:
                     # Include sources if grounding tools were enabled
                     result = {
                         "text": text_response,
-                        "sources": extracted_info["sources"]
+                        "sources": extracted_info["sources"],
+                        "grounding_enabled": {
+                            "google_search": enable_google_search,
+                            "url_context": enable_url_context
+                        }
                     }
 
                     # Add search queries if available
@@ -764,17 +834,34 @@ class LLMManager:
                 # Handle JSON parsing if requested
                 if return_json:
                     try:
-                        if text_response.startswith("```json"):
-                            text_response = text_response.removeprefix("```json").removesuffix("```").strip()
-                        data_dict = json.loads(text_response)
+                        # Strip markdown code blocks if present
+                        text_response = self._strip_markdown_json(text_response)
+                        parsed_data = json.loads(text_response)
 
                         # If grounding is enabled, merge the parsed JSON with sources
                         if enable_google_search or enable_url_context:
-                            data_dict["sources"] = extracted_info["sources"]
-                            if "search_queries" in extracted_info:
-                                data_dict["search_queries"] = extracted_info["search_queries"]
+                            # If parsed data is a list, wrap it in a dict with sources
+                            if isinstance(parsed_data, list):
+                                return True, {
+                                    "data": parsed_data,
+                                    "sources": extracted_info["sources"],
+                                    "search_queries": extracted_info.get("search_queries", []),
+                                    "grounding_enabled": {
+                                        "google_search": enable_google_search,
+                                        "url_context": enable_url_context
+                                    }
+                                }
+                            # If it's a dict, add sources directly
+                            elif isinstance(parsed_data, dict):
+                                parsed_data["sources"] = extracted_info["sources"]
+                                if "search_queries" in extracted_info:
+                                    parsed_data["search_queries"] = extracted_info["search_queries"]
+                                parsed_data["grounding_enabled"] = {
+                                    "google_search": enable_google_search,
+                                    "url_context": enable_url_context
+                                }
 
-                        return True, data_dict
+                        return True, parsed_data
                     except json.JSONDecodeError:
                         # Return the result as-is if JSON parsing fails
                         return True, result
@@ -819,8 +906,8 @@ class LLMManager:
                 # Try to parse as JSON if requested
                 if return_json:
                     try:
-                        if text_response.startswith("```json"):
-                            text_response = text_response.removeprefix("```json").removesuffix("```").strip()
+                        # Strip markdown code blocks if present
+                        text_response = self._strip_markdown_json(text_response)
                         data_dict = json.loads(text_response)
                         return True, data_dict
                     except json.JSONDecodeError:
