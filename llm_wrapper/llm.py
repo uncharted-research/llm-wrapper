@@ -317,27 +317,57 @@ class LLMManager:
                     contents=contents,
                     config=config
                 )
-                
-                if not response.candidates[0].content.parts[0].text:
+
+                # Use the new helper to extract grounding info
+                extracted_info = self._extract_grounding_info(response)
+
+                if not extracted_info["text"]:
                     return False, "No response from Gemini"
-                
-                text_response = response.candidates[0].content.parts[0].text.strip()
-                
-                # Try to parse as JSON, fall back to plain text
+
+                text_response = extracted_info["text"]
+
+                # Prepare the result based on whether grounding is enabled
+                if enable_google_search or enable_url_context:
+                    # Include sources if grounding tools were enabled
+                    result = {
+                        "text": text_response,
+                        "sources": extracted_info["sources"]
+                    }
+
+                    # Add search queries if available
+                    if "search_queries" in extracted_info:
+                        result["search_queries"] = extracted_info["search_queries"]
+
+                    # Add grounding metadata if requested (could be made optional)
+                    if extracted_info["grounding_metadata"]:
+                        result["grounding_metadata"] = extracted_info["grounding_metadata"]
+                else:
+                    # No grounding tools enabled, return text only
+                    result = {"text": text_response}
+
+                # Handle JSON parsing if requested
                 if return_json:
                     try:
                         if text_response.startswith("```json"):
                             text_response = text_response.removeprefix("```json").removesuffix("```").strip()
                         data_dict = json.loads(text_response)
+
+                        # If grounding is enabled, merge the parsed JSON with sources
+                        if enable_google_search or enable_url_context:
+                            data_dict["sources"] = extracted_info["sources"]
+                            if "search_queries" in extracted_info:
+                                data_dict["search_queries"] = extracted_info["search_queries"]
+
                         return True, data_dict
                     except json.JSONDecodeError:
-                        return True, {"text": text_response}
+                        # Return the result as-is if JSON parsing fails
+                        return True, result
                 else:
-                    return True, {"text": text_response}
-                
+                    return True, result
+
             except Exception as e:
                 return False, str(e)
-            
+
             # This should never be reached, but adding for safety
             return False, "Unexpected error: no return path taken"
         
@@ -415,29 +445,207 @@ class LLMManager:
                     contents=contents,
                     config=config
                 )
-                
-                if not response.candidates[0].content.parts[0].text:
+
+                # Use the new helper to extract grounding info
+                extracted_info = self._extract_grounding_info(response)
+
+                if not extracted_info["text"]:
                     return False, "No response from Gemini"
-                
-                text_response = response.candidates[0].content.parts[0].text.strip()
-                
-                # Try to parse as JSON, fall back to plain text
+
+                text_response = extracted_info["text"]
+
+                # Prepare the result based on whether grounding is enabled
+                if enable_google_search or enable_url_context:
+                    # Include sources if grounding tools were enabled
+                    result = {
+                        "text": text_response,
+                        "sources": extracted_info["sources"]
+                    }
+
+                    # Add search queries if available
+                    if "search_queries" in extracted_info:
+                        result["search_queries"] = extracted_info["search_queries"]
+
+                    # Add grounding metadata if requested (could be made optional)
+                    if extracted_info["grounding_metadata"]:
+                        result["grounding_metadata"] = extracted_info["grounding_metadata"]
+                else:
+                    # No grounding tools enabled, return text only
+                    result = {"text": text_response}
+
+                # Handle JSON parsing if requested
                 if return_json:
                     try:
                         if text_response.startswith("```json"):
                             text_response = text_response.removeprefix("```json").removesuffix("```").strip()
                         data_dict = json.loads(text_response)
+
+                        # If grounding is enabled, merge the parsed JSON with sources
+                        if enable_google_search or enable_url_context:
+                            data_dict["sources"] = extracted_info["sources"]
+                            if "search_queries" in extracted_info:
+                                data_dict["search_queries"] = extracted_info["search_queries"]
+
                         return True, data_dict
                     except json.JSONDecodeError:
-                        return True, {"text": text_response}
+                        # Return the result as-is if JSON parsing fails
+                        return True, result
                 else:
-                    return True, {"text": text_response}
-                
+                    return True, result
+
             except Exception as e:
                 return False, str(e)
         
         return await asyncio.to_thread(sync_call)
-    
+
+    def _extract_grounding_info(self, response):
+        """Extract grounding information and sources from Gemini response.
+
+        Args:
+            response: The Gemini API response object
+
+        Returns:
+            A dictionary containing:
+                - text: The main response text
+                - sources: List of source dictionaries with url, title, and snippet
+                - grounding_metadata: Raw grounding metadata if available
+        """
+        result = {
+            "text": "",
+            "sources": [],
+            "grounding_metadata": None
+        }
+
+        # Extract main text from all parts
+        text_parts = []
+        if response.candidates and len(response.candidates) > 0:
+            candidate = response.candidates[0]
+
+            # Get all text parts
+            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                for part in candidate.content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        text_parts.append(part.text)
+
+            # Combine all text parts
+            result["text"] = "\n".join(text_parts).strip()
+
+            # Extract grounding attributions if available
+            if hasattr(candidate, 'grounding_attributions') and candidate.grounding_attributions:
+                for attribution in candidate.grounding_attributions:
+                    source_info = {}
+
+                    # Extract source URL
+                    if hasattr(attribution, 'source_id') and hasattr(attribution.source_id, 'grounding_passage'):
+                        grounding_passage = attribution.source_id.grounding_passage
+
+                        if hasattr(grounding_passage, 'passage_id'):
+                            # Extract URL from passage_id if it's formatted as a URL
+                            source_info['url'] = grounding_passage.passage_id
+
+                        # Extract snippet/content
+                        if hasattr(grounding_passage, 'content'):
+                            source_info['snippet'] = grounding_passage.content
+
+                    # Extract web reference if available
+                    if hasattr(attribution, 'source_id') and hasattr(attribution.source_id, 'web'):
+                        web_ref = attribution.source_id.web
+                        if hasattr(web_ref, 'uri'):
+                            source_info['url'] = web_ref.uri
+                        if hasattr(web_ref, 'title'):
+                            source_info['title'] = web_ref.title
+
+                    # Add segment information if available
+                    if hasattr(attribution, 'segment'):
+                        if hasattr(attribution.segment, 'text'):
+                            source_info['cited_text'] = attribution.segment.text
+
+                    if source_info:
+                        result["sources"].append(source_info)
+
+            # Check for grounding support in the content itself
+            # Sometimes Gemini includes sources directly in the response
+            if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                result["grounding_metadata"] = candidate.grounding_metadata
+
+                # Extract web search queries
+                if hasattr(candidate.grounding_metadata, 'web_search_queries') and candidate.grounding_metadata.web_search_queries:
+                    for query in candidate.grounding_metadata.web_search_queries:
+                        if query not in result.get("search_queries", []):
+                            result.setdefault("search_queries", []).append(query)
+
+                # Extract grounding chunks (sources)
+                if hasattr(candidate.grounding_metadata, 'grounding_chunks') and candidate.grounding_metadata.grounding_chunks:
+                    for chunk in candidate.grounding_metadata.grounding_chunks:
+                        source_info = {}
+
+                        # Check for web reference
+                        if hasattr(chunk, 'web') and chunk.web:
+                            web_ref = chunk.web
+                            if hasattr(web_ref, 'uri'):
+                                source_info['url'] = web_ref.uri
+                            if hasattr(web_ref, 'title'):
+                                source_info['title'] = web_ref.title
+
+                        # Check for retrieval reference (for document retrieval)
+                        if hasattr(chunk, 'retrieval') and chunk.retrieval:
+                            retrieval_ref = chunk.retrieval
+                            if hasattr(retrieval_ref, 'uri'):
+                                source_info['url'] = retrieval_ref.uri
+                            if hasattr(retrieval_ref, 'title'):
+                                source_info['title'] = retrieval_ref.title
+
+                        if source_info and source_info not in result["sources"]:
+                            result["sources"].append(source_info)
+
+                # Extract grounding supports (text segments linked to sources)
+                if hasattr(candidate.grounding_metadata, 'grounding_supports') and candidate.grounding_metadata.grounding_supports:
+                    # This links text segments to specific grounding chunks
+                    # We could use this to provide more detailed citation information
+                    pass
+
+        # Check if sources are embedded in the response text itself
+        # Gemini sometimes includes citations like [1], [2] with source list at the end
+        import re
+        citation_pattern = r'\[(\d+)\]'
+        citations = re.findall(citation_pattern, result["text"])
+
+        if citations:
+            # Look for a sources section at the end of the text
+            sources_section_pattern = r'(?:Sources?|References?|Citations?):\s*\n(.*?)$'
+            sources_match = re.search(sources_section_pattern, result["text"], re.DOTALL | re.IGNORECASE)
+
+            if sources_match:
+                sources_text = sources_match.group(1)
+                # Parse individual source lines
+                source_lines = sources_text.strip().split('\n')
+                for line in source_lines:
+                    # Match patterns like [1] title - url or 1. title (url)
+                    url_pattern = r'(?:\[?\d+\]?\.?\s*)?(.+?)\s*[-–]\s*(https?://\S+)|(?:\[?\d+\]?\.?\s*)?(.+?)\s*\((https?://\S+)\)'
+                    match = re.match(url_pattern, line.strip())
+                    if match:
+                        if match.group(1) and match.group(2):
+                            result["sources"].append({
+                                "title": match.group(1).strip(),
+                                "url": match.group(2).strip()
+                            })
+                        elif match.group(3) and match.group(4):
+                            result["sources"].append({
+                                "title": match.group(3).strip(),
+                                "url": match.group(4).strip()
+                            })
+
+        # Remove duplicate sources
+        seen_urls = set()
+        unique_sources = []
+        for source in result["sources"]:
+            if 'url' in source and source['url'] not in seen_urls:
+                seen_urls.add(source['url'])
+                unique_sources.append(source)
+        result["sources"] = unique_sources
+
+        return result
+
     async def _call_gemini_with_prompt(
         self,
         model: str,
@@ -487,24 +695,54 @@ class LLMManager:
                     contents=contents,
                     config=config
                 )
-                
-                if not response.candidates[0].content.parts[0].text:
+
+                # Use the new helper to extract grounding info
+                extracted_info = self._extract_grounding_info(response)
+
+                if not extracted_info["text"]:
                     return False, "No response from Gemini"
-                
-                text_response = response.candidates[0].content.parts[0].text.strip()
-                
-                # Try to parse as JSON, fall back to plain text
+
+                text_response = extracted_info["text"]
+
+                # Prepare the result based on whether grounding is enabled
+                if enable_google_search or enable_url_context:
+                    # Include sources if grounding tools were enabled
+                    result = {
+                        "text": text_response,
+                        "sources": extracted_info["sources"]
+                    }
+
+                    # Add search queries if available
+                    if "search_queries" in extracted_info:
+                        result["search_queries"] = extracted_info["search_queries"]
+
+                    # Add grounding metadata if requested (could be made optional)
+                    if extracted_info["grounding_metadata"]:
+                        result["grounding_metadata"] = extracted_info["grounding_metadata"]
+                else:
+                    # No grounding tools enabled, return text only
+                    result = {"text": text_response}
+
+                # Handle JSON parsing if requested
                 if return_json:
                     try:
                         if text_response.startswith("```json"):
                             text_response = text_response.removeprefix("```json").removesuffix("```").strip()
                         data_dict = json.loads(text_response)
+
+                        # If grounding is enabled, merge the parsed JSON with sources
+                        if enable_google_search or enable_url_context:
+                            data_dict["sources"] = extracted_info["sources"]
+                            if "search_queries" in extracted_info:
+                                data_dict["search_queries"] = extracted_info["search_queries"]
+
                         return True, data_dict
                     except json.JSONDecodeError:
-                        return True, {"text": text_response}
+                        # Return the result as-is if JSON parsing fails
+                        return True, result
                 else:
-                    return True, {"text": text_response}
-                
+                    return True, result
+
             except Exception as e:
                 return False, str(e)
             
