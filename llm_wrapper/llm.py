@@ -605,34 +605,72 @@ class LLMManager:
                     pass
 
         # Check if sources are embedded in the response text itself
-        # Gemini sometimes includes citations like [1], [2] with source list at the end
+        # Gemini sometimes includes citations and a source list at the end
         import re
-        citation_pattern = r'\[(\d+)\]'
-        citations = re.findall(citation_pattern, result["text"])
 
-        if citations:
-            # Look for a sources section at the end of the text
-            sources_section_pattern = r'(?:Sources?|References?|Citations?):\s*\n(.*?)$'
+        # First, check for inline citations like [cite:1, 1~description]
+        inline_citation_pattern = r'\[cite:(\d+),\s*\d+~[^\]]+\]'
+        inline_citations = re.findall(inline_citation_pattern, result["text"])
+
+        # Look for a sources section at the end of the text
+        # Match patterns like "Sources:", "**Sources:**", etc.
+        sources_section_pattern = r'(?:\*{0,2}Sources?\*{0,2}:?\s*\n)((?:\d+\..*\n?)+)'
+        sources_match = re.search(sources_section_pattern, result["text"], re.DOTALL | re.IGNORECASE)
+
+        if not sources_match:
+            # Try alternative pattern without markdown
+            sources_section_pattern = r'(?:Sources?:?\s*\n)((?:\d+\..*\n?)+)$'
             sources_match = re.search(sources_section_pattern, result["text"], re.DOTALL | re.IGNORECASE)
 
-            if sources_match:
-                sources_text = sources_match.group(1)
-                # Parse individual source lines
-                source_lines = sources_text.strip().split('\n')
-                for line in source_lines:
-                    # Match patterns like [1] title - url or 1. title (url)
-                    url_pattern = r'(?:\[?\d+\]?\.?\s*)?(.+?)\s*[-–]\s*(https?://\S+)|(?:\[?\d+\]?\.?\s*)?(.+?)\s*\((https?://\S+)\)'
-                    match = re.match(url_pattern, line.strip())
-                    if match:
-                        if match.group(1) and match.group(2):
+        if sources_match:
+            sources_text = sources_match.group(1)
+            # Parse individual source lines
+            source_lines = sources_text.strip().split('\n')
+
+            for line in source_lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Match numbered sources like "1. https://url" or "1. title - url"
+                # Handle both direct URLs and URLs with titles
+                numbered_pattern = r'^(\d+)\.\s+(.+)$'
+                numbered_match = re.match(numbered_pattern, line)
+
+                if numbered_match:
+                    source_num = numbered_match.group(1)
+                    source_content = numbered_match.group(2).strip()
+
+                    # Check if it's just a URL
+                    if source_content.startswith('http'):
+                        # Extract domain name as title from URL
+                        domain_match = re.search(r'https?://([^/]+)', source_content)
+                        title = domain_match.group(1) if domain_match else f"Source {source_num}"
+                        result["sources"].append({
+                            "number": int(source_num),
+                            "title": title,
+                            "url": source_content
+                        })
+                    else:
+                        # Try to extract title and URL
+                        # Pattern for "title - url" or "title: url"
+                        title_url_pattern = r'^(.+?)\s*[-–:]\s*(https?://\S+)'
+                        title_match = re.match(title_url_pattern, source_content)
+
+                        if title_match:
                             result["sources"].append({
-                                "title": match.group(1).strip(),
-                                "url": match.group(2).strip()
+                                "number": int(source_num),
+                                "title": title_match.group(1).strip(),
+                                "url": title_match.group(2).strip()
                             })
-                        elif match.group(3) and match.group(4):
+                        elif source_content.startswith('http'):
+                            # Just a URL without title
+                            domain_match = re.search(r'https?://([^/]+)', source_content)
+                            title = domain_match.group(1) if domain_match else f"Source {source_num}"
                             result["sources"].append({
-                                "title": match.group(3).strip(),
-                                "url": match.group(4).strip()
+                                "number": int(source_num),
+                                "title": title,
+                                "url": source_content
                             })
 
         # Remove duplicate sources
