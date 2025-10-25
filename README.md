@@ -49,7 +49,7 @@ async def main():
     # Simple text generation
     success, result = await llm.call_llm(
         family="gemini",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         prompt="Explain quantum computing in simple terms"
     )
     
@@ -309,7 +309,7 @@ from llm_wrapper import get_llm_manager
 llm = get_llm_manager()
 
 # Check Gemini limits
-status = llm.get_rate_limit_status("gemini", "gemini-2.0-flash")
+status = llm.get_rate_limit_status("gemini", "gemini-2.5-flash")
 print(f"Gemini - API calls remaining: {status['calls_remaining']}")
 print(f"Gemini - Tokens remaining: {status['tokens_remaining']}")
 
@@ -389,11 +389,3 @@ uv run pytest
 uv run black .
 uv run isort .
 ```
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
