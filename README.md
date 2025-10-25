@@ -11,6 +11,9 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 - **Image Data Support**: Send image bytes directly without file paths (Gemini only)
 - **Image Generation**: Support for Gemini's Imagen models
 - **Claude Integration**: Full support for Claude Opus and Sonnet models
+- **Google Search Tool**: Enable real-time web search for up-to-date information (Gemini only)
+- **URL Context Tool**: Analyze web pages directly from URLs (Gemini only)
+- **Thinking Budget**: Control reasoning process with configurable thinking budget (Gemini only)
 - **Singleton Pattern**: Efficient resource management with automatic client reuse
 
 ## Installation
@@ -209,6 +212,94 @@ success, result = await llm.call_llm(
 ```
 
 **Note**: Image support is only available for Gemini models. Claude models will return an error if image_data or file_path is provided.
+
+### Using Google Search and URL Context Tools (Gemini Only)
+
+The library now supports Google Search and URL context tools for Gemini models, allowing them to fetch real-time information from the web and analyze URLs directly.
+
+#### URL Context Tool
+
+Analyze web pages directly by providing URLs in your prompts:
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def analyze_website():
+    llm = get_llm_manager()
+
+    success, result = await llm.call_llm(
+        family="gemini",
+        model="gemini-2.5-flash",
+        prompt="Analyze this company: https://www.anthropic.com",
+        enable_url_context=True,  # Enable URL context tool
+        thinking_budget=-1  # Unlimited thinking (default)
+    )
+
+    if success:
+        print(result["text"])
+
+asyncio.run(analyze_website())
+```
+
+#### Google Search Tool
+
+Enable web search to get up-to-date information:
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def search_web():
+    llm = get_llm_manager()
+
+    success, result = await llm.call_llm(
+        family="gemini",
+        model="gemini-2.5-flash",
+        prompt="What are the latest developments in quantum computing in 2024?",
+        enable_google_search=True,  # Enable Google Search
+        thinking_budget=10000  # Limited thinking budget
+    )
+
+    if success:
+        print(result["text"])
+
+asyncio.run(search_web())
+```
+
+#### Using Both Tools Together
+
+Combine both tools for comprehensive research:
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def research_companies():
+    llm = get_llm_manager()
+
+    success, result = await llm.call_llm(
+        family="gemini",
+        model="gemini-2.5-flash",
+        prompt="Compare Apple (apple.com) and Microsoft (microsoft.com) based on their latest products",
+        enable_google_search=True,
+        enable_url_context=True,
+        thinking_budget=-1  # Unlimited thinking
+    )
+
+    if success:
+        print(result["text"])
+
+asyncio.run(research_companies())
+```
+
+#### Tool Parameters
+
+- `enable_google_search` (bool, default: False): Enable Google Search tool for real-time web information
+- `enable_url_context` (bool, default: False): Enable URL context tool for analyzing web pages
+- `thinking_budget` (int, default: -1): Control the thinking process (-1 for unlimited, 0 to disable, positive values for limited budget)
+
+**Note**: These tools are only available for Gemini models. Claude models will ignore these parameters.
 
 ### Rate Limit Monitoring
 

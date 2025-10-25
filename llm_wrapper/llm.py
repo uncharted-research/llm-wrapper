@@ -138,11 +138,14 @@ class LLMManager:
         image_mime_type: str = "image/jpeg",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        return_json: bool = False
+        return_json: bool = False,
+        enable_google_search: bool = False,
+        enable_url_context: bool = False,
+        thinking_budget: int = -1
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
         """
         Make an LLM call with rate limiting.
-        
+
         Args:
             family: LLM family ('Gemini' or 'Claude')
             model: Model name
@@ -153,6 +156,9 @@ class LLMManager:
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
             return_json: Whether to return the response as a JSON object
+            enable_google_search: Enable Google Search tool (Gemini only, default: False)
+            enable_url_context: Enable URL context tool (Gemini only, default: False)
+            thinking_budget: Thinking budget for Gemini (-1 for unlimited, default: -1)
         Returns:
             Tuple of (success: bool, result: dict or error_message: str)
         """
@@ -178,15 +184,18 @@ class LLMManager:
                 if image_data is not None:
                     # Image data takes precedence over file_path
                     result = await self._call_gemini_with_image_data(
-                        model, prompt, image_data, image_mime_type, max_tokens, temperature, return_json
+                        model, prompt, image_data, image_mime_type, max_tokens, temperature, return_json,
+                        enable_google_search, enable_url_context, thinking_budget
                     )
                 elif file_path:
                     result = await self._call_gemini_with_file(
-                        model, prompt, file_path, max_tokens, temperature, return_json
+                        model, prompt, file_path, max_tokens, temperature, return_json,
+                        enable_google_search, enable_url_context, thinking_budget
                     )
                 else:
                     result = await self._call_gemini_with_prompt(
-                        model, prompt, max_tokens, temperature, return_json
+                        model, prompt, max_tokens, temperature, return_json,
+                        enable_google_search, enable_url_context, thinking_budget
                     )
             
             # Update counters on successful call
@@ -242,7 +251,10 @@ class LLMManager:
         file_path: Union[str, Path],
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        return_json: bool = False
+        return_json: bool = False,
+        enable_google_search: bool = False,
+        enable_url_context: bool = False,
+        thinking_budget: int = -1
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
         """Call Gemini with a file attachment."""
         def sync_call():
@@ -257,23 +269,53 @@ class LLMManager:
                     mime_type = "image/png"
                 elif file_path_obj.suffix.lower() in ['.txt']:
                     mime_type = "text/plain"
-                
-                config = types.GenerateContentConfig()
+
+                # Build configuration
+                config_dict = {}
                 if max_tokens:
-                    config.max_output_tokens = max_tokens
+                    config_dict['max_output_tokens'] = max_tokens
                 if temperature is not None:
-                    config.temperature = temperature
-                
-                response = self.gemini_client.models.generate_content(
-                    model=model,
-                    contents=[
+                    config_dict['temperature'] = temperature
+
+                # Always add thinking config
+                config_dict['thinking_config'] = types.ThinkingConfig(thinking_budget=thinking_budget)
+
+                # Add tools if any are enabled
+                tools = []
+                if enable_url_context:
+                    tools.append(types.Tool(url_context=types.UrlContext()))
+                if enable_google_search:
+                    tools.append(types.Tool(googleSearch=types.GoogleSearch()))
+                if tools:
+                    config_dict['tools'] = tools
+
+                config = types.GenerateContentConfig(**config_dict) if config_dict else None
+
+                # Format contents based on whether tools are enabled
+                if tools:
+                    contents = [types.Content(
+                        role="user",
+                        parts=[
+                            Part.from_bytes(
+                                data=file_path_obj.read_bytes(),
+                                mime_type=mime_type,
+                            ),
+                            types.Part.from_text(text=prompt)
+                        ]
+                    )]
+                else:
+                    contents = [
                         Part.from_bytes(
                             data=file_path_obj.read_bytes(),
                             mime_type=mime_type,
                         ),
                         prompt,
-                    ],
-                    config=config if max_tokens or temperature is not None else None
+                    ]
+
+                response = self.gemini_client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config
                 )
                 
                 if not response.candidates[0].content.parts[0].text:
@@ -309,7 +351,10 @@ class LLMManager:
         mime_type: str = "image/jpeg",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        return_json: bool = False
+        return_json: bool = False,
+        enable_google_search: bool = False,
+        enable_url_context: bool = False,
+        thinking_budget: int = -1
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
         """Call Gemini with image data bytes."""
         def sync_call():
@@ -322,23 +367,53 @@ class LLMManager:
                 supported_mime_types = ["image/jpeg", "image/png", "image/webp", "image/gif"]
                 if mime_type not in supported_mime_types:
                     return False, f"Unsupported MIME type: {mime_type}. Supported types: {', '.join(supported_mime_types)}"
-                
-                config = types.GenerateContentConfig()
+
+                # Build configuration
+                config_dict = {}
                 if max_tokens:
-                    config.max_output_tokens = max_tokens
+                    config_dict['max_output_tokens'] = max_tokens
                 if temperature is not None:
-                    config.temperature = temperature
-                
-                response = self.gemini_client.models.generate_content(
-                    model=model,
-                    contents=[
+                    config_dict['temperature'] = temperature
+
+                # Always add thinking config
+                config_dict['thinking_config'] = types.ThinkingConfig(thinking_budget=thinking_budget)
+
+                # Add tools if any are enabled
+                tools = []
+                if enable_url_context:
+                    tools.append(types.Tool(url_context=types.UrlContext()))
+                if enable_google_search:
+                    tools.append(types.Tool(googleSearch=types.GoogleSearch()))
+                if tools:
+                    config_dict['tools'] = tools
+
+                config = types.GenerateContentConfig(**config_dict) if config_dict else None
+
+                # Format contents based on whether tools are enabled
+                if tools:
+                    contents = [types.Content(
+                        role="user",
+                        parts=[
+                            Part.from_bytes(
+                                data=image_data,
+                                mime_type=mime_type,
+                            ),
+                            types.Part.from_text(text=prompt)
+                        ]
+                    )]
+                else:
+                    contents = [
                         Part.from_bytes(
                             data=image_data,
                             mime_type=mime_type,
                         ),
                         prompt,
-                    ],
-                    config=config if max_tokens or temperature is not None else None
+                    ]
+
+                response = self.gemini_client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config
                 )
                 
                 if not response.candidates[0].content.parts[0].text:
@@ -369,21 +444,48 @@ class LLMManager:
         prompt: str,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        return_json: bool = False
+        return_json: bool = False,
+        enable_google_search: bool = False,
+        enable_url_context: bool = False,
+        thinking_budget: int = -1
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
         """Call Gemini with text prompt only."""
         def sync_call():
             try:
-                config = types.GenerateContentConfig()
+                # Build configuration
+                config_dict = {}
                 if max_tokens:
-                    config.max_output_tokens = max_tokens
+                    config_dict['max_output_tokens'] = max_tokens
                 if temperature is not None:
-                    config.temperature = temperature
-                
+                    config_dict['temperature'] = temperature
+
+                # Always add thinking config
+                config_dict['thinking_config'] = types.ThinkingConfig(thinking_budget=thinking_budget)
+
+                # Add tools if any are enabled
+                tools = []
+                if enable_url_context:
+                    tools.append(types.Tool(url_context=types.UrlContext()))
+                if enable_google_search:
+                    tools.append(types.Tool(googleSearch=types.GoogleSearch()))
+                if tools:
+                    config_dict['tools'] = tools
+
+                config = types.GenerateContentConfig(**config_dict) if config_dict else None
+
+                # Format contents based on whether tools are enabled
+                if tools:
+                    contents = [types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=prompt)]
+                    )]
+                else:
+                    contents = [prompt]
+
                 response = self.gemini_client.models.generate_content(
                     model=model,
-                    contents=[prompt],
-                    config=config if max_tokens or temperature is not None else None
+                    contents=contents,
+                    config=config
                 )
                 
                 if not response.candidates[0].content.parts[0].text:
