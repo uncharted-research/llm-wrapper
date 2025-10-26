@@ -28,6 +28,7 @@ class LLMManager:
         "gemini-2.5-pro": (50, 800_000),
         "gemini-2.5-flash": (400, 500_000),
         "gemini-2.0-flash": (800, 1_000_000),
+        "gemini-2.5-flash-lite": (3000, 2_500_000),
         "imagen-3.0-generate-002": (5,)  # Only calls per minute limit
     }
     
