@@ -389,7 +389,7 @@ class LLMManager:
                         if enable_google_search or enable_url_context:
                             # If parsed data is a list, wrap it in a dict with sources
                             if isinstance(parsed_data, list):
-                                return True, {
+                                wrapped_response = {
                                     "data": parsed_data,
                                     "sources": extracted_info["sources"],
                                     "search_queries": extracted_info.get("search_queries", []),
@@ -398,6 +398,10 @@ class LLMManager:
                                         "url_context": enable_url_context
                                     }
                                 }
+                                # Include grounding_metadata if available
+                                if extracted_info.get("grounding_metadata"):
+                                    wrapped_response["grounding_metadata"] = extracted_info["grounding_metadata"]
+                                return True, wrapped_response
                             # If it's a dict, add sources directly
                             elif isinstance(parsed_data, dict):
                                 parsed_data["sources"] = extracted_info["sources"]
@@ -538,7 +542,7 @@ class LLMManager:
                         if enable_google_search or enable_url_context:
                             # If parsed data is a list, wrap it in a dict with sources
                             if isinstance(parsed_data, list):
-                                return True, {
+                                wrapped_response = {
                                     "data": parsed_data,
                                     "sources": extracted_info["sources"],
                                     "search_queries": extracted_info.get("search_queries", []),
@@ -547,6 +551,10 @@ class LLMManager:
                                         "url_context": enable_url_context
                                     }
                                 }
+                                # Include grounding_metadata if available
+                                if extracted_info.get("grounding_metadata"):
+                                    wrapped_response["grounding_metadata"] = extracted_info["grounding_metadata"]
+                                return True, wrapped_response
                             # If it's a dict, add sources directly
                             elif isinstance(parsed_data, dict):
                                 parsed_data["sources"] = extracted_info["sources"]
@@ -646,6 +654,29 @@ class LLMManager:
                     # This links text segments to specific grounding chunks
                     # We could use this to provide more detailed citation information
                     pass
+
+                # Extract URLs from search_entry_point if grounding_chunks is empty
+                # Note: grounding_chunks is often None even when grounding works
+                # The actual source URLs are in the HTML of search_entry_point
+                if hasattr(candidate.grounding_metadata, 'search_entry_point') and candidate.grounding_metadata.search_entry_point:
+                    sep = candidate.grounding_metadata.search_entry_point
+
+                    if hasattr(sep, 'rendered_content') and sep.rendered_content:
+                        # Extract URLs from the HTML using regex
+                        # Look for href="https://..." patterns
+                        url_pattern = r'href="(https://[^"]+)"'
+                        found_urls = re.findall(url_pattern, sep.rendered_content)
+
+                        # Filter out SVG namespace URLs and add real sources
+                        for url in found_urls:
+                            if not url.startswith('http://www.w3.org/'):
+                                # Check if not already in sources
+                                existing_urls = [s.get('url') for s in result["sources"]]
+                                if url not in existing_urls:
+                                    result["sources"].append({
+                                        'url': url,
+                                        'source_type': 'google_search'
+                                    })
 
             # Extract sources from url_context_metadata if available
             # This is separate from grounding_metadata and provides URL retrieval status
@@ -842,7 +873,7 @@ class LLMManager:
                         if enable_google_search or enable_url_context:
                             # If parsed data is a list, wrap it in a dict with sources
                             if isinstance(parsed_data, list):
-                                return True, {
+                                wrapped_response = {
                                     "data": parsed_data,
                                     "sources": extracted_info["sources"],
                                     "search_queries": extracted_info.get("search_queries", []),
@@ -851,6 +882,10 @@ class LLMManager:
                                         "url_context": enable_url_context
                                     }
                                 }
+                                # Include grounding_metadata if available
+                                if extracted_info.get("grounding_metadata"):
+                                    wrapped_response["grounding_metadata"] = extracted_info["grounding_metadata"]
+                                return True, wrapped_response
                             # If it's a dict, add sources directly
                             elif isinstance(parsed_data, dict):
                                 parsed_data["sources"] = extracted_info["sources"]
