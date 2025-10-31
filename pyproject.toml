@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-wrapper"
 version = "0.1.0"
-description = "A Python wrapper around LLMs (Gemini, Claude) with rate limiting and unified interface"
+description = "A Python wrapper around LLMs (Gemini, Claude, Groq) with rate limiting and unified interface"
 readme = "README.md"
 license = {text = "Proprietary - Exclusive use by uncharted group GmbH"}
 requires-python = ">=3.10"
 authors = [
     {name = "Christoph Mayer"},
 ]
-keywords = ["llm", "ai", "gemini", "claude", "rate-limiting"]
+keywords = ["llm", "ai", "gemini", "claude", "groq", "rate-limiting"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -28,6 +28,8 @@ dependencies = [
     "pillow>=11.3.0",
     "python-dotenv>=1.0.0",
     "anthropic>=0.39.0",
+    "groq>=0.33.0",
+    "ipykernel>=7.1.0",
 ]
 
 [project.urls]

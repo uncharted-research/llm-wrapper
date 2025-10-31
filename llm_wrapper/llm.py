@@ -16,6 +16,7 @@ from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
 import anthropic
+from groq import AsyncGroq
 
 class LLMManager:
     """Singleton class for managing LLM calls with rate limiting."""
@@ -40,6 +41,7 @@ class LLMManager:
     # Default models
     DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
     DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+    DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
     
     def __new__(cls):
         if cls._instance is None:
@@ -52,20 +54,26 @@ class LLMManager:
     def __init__(self):
         if self._initialized:
             return
-            
+
         # Load environment variables from .env file
         load_dotenv()
-        
+
         # Initialize clients
         self.gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         self.claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        
+        self.groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+
+        # Load Groq rate limits from JSON file
+        groq_limits_path = Path(__file__).parent / "groq_limits.json"
+        with open(groq_limits_path, 'r') as f:
+            self.dict_groq_limits = json.load(f)
+
         # Rate limiting counters: family -> model -> {'calls': deque, 'tokens': deque}
         self.counters = defaultdict(lambda: defaultdict(lambda: {
             'calls': deque(),
             'tokens': deque()
         }))
-        
+
         self._initialized = True
     
     def _clean_old_entries(self, counter_deque: deque, window_seconds: int = 60, is_tokens: bool = False):
@@ -83,20 +91,29 @@ class LLMManager:
     def _check_rate_limits(self, family: str, model: str, estimated_tokens: int) -> bool:
         """Check if the request would exceed rate limits."""
         family_lower = family.lower()
-        
+
         if family_lower == "gemini":
             if model not in self.dict_gemini_limits:
                 raise ValueError(f"Unknown Gemini model: {model}")
             limits = self.dict_gemini_limits[model]
+            calls_limit = limits[0]
+            tokens_limit = limits[1] if len(limits) > 1 else None
         elif family_lower == "claude":
             if model not in self.dict_claude_limits:
                 raise ValueError(f"Unknown Claude model: {model}")
             limits = self.dict_claude_limits[model]
+            calls_limit = limits[0]
+            tokens_limit = limits[1] if len(limits) > 1 else None
+        elif family_lower == "groq":
+            if model not in self.dict_groq_limits:
+                # For Groq, we don't raise an error for unknown models
+                # We'll let the API handle it, but we can't rate limit
+                return True
+            limits = self.dict_groq_limits[model]
+            calls_limit = limits["rpm"]
+            tokens_limit = limits["tpm"]
         else:
             raise ValueError(f"Family {family} not supported")
-        
-        calls_limit = limits[0]
-        tokens_limit = limits[1] if len(limits) > 1 else None
         
         counters = self.counters[family_lower][model]
         
@@ -958,7 +975,110 @@ class LLMManager:
             return False, "Unexpected error: no return path taken"
         
         return await asyncio.to_thread(sync_call)
-    
+
+    async def _call_groq_with_prompt(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """Call Groq with text prompt only (non-streaming)."""
+        try:
+            # Build request parameters
+            kwargs = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+
+            # Make API call
+            chat_completion = await self.groq_client.chat.completions.create(**kwargs)
+
+            if not chat_completion.choices or not chat_completion.choices[0].message.content:
+                return False, "No response from Groq"
+
+            text_response = chat_completion.choices[0].message.content.strip()
+
+            # Try to parse as JSON if requested
+            if return_json:
+                try:
+                    # Strip markdown code blocks if present
+                    text_response = self._strip_markdown_json(text_response)
+                    data_dict = json.loads(text_response)
+                    return True, data_dict
+                except json.JSONDecodeError:
+                    return True, {"text": text_response}
+            else:
+                return True, {"text": text_response}
+
+        except Exception as e:
+            # Handle Groq API errors (including invalid model names)
+            error_msg = str(e)
+            if "model" in error_msg.lower() and "not found" in error_msg.lower():
+                return False, f"Unknown Groq model: {model}. Error: {error_msg}"
+            return False, f"Groq API error: {error_msg}"
+
+    async def _call_groq_with_prompt_stream(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """Call Groq with text prompt only (streaming, but returns full accumulated text)."""
+        try:
+            # Build request parameters
+            kwargs = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True
+            }
+
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+
+            # Make streaming API call
+            stream = await self.groq_client.chat.completions.create(**kwargs)
+
+            # Accumulate chunks
+            accumulated_text = ""
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    accumulated_text += chunk.choices[0].delta.content
+
+            if not accumulated_text:
+                return False, "No response from Groq"
+
+            text_response = accumulated_text.strip()
+
+            # Try to parse as JSON if requested
+            if return_json:
+                try:
+                    # Strip markdown code blocks if present
+                    text_response = self._strip_markdown_json(text_response)
+                    data_dict = json.loads(text_response)
+                    return True, data_dict
+                except json.JSONDecodeError:
+                    return True, {"text": text_response}
+            else:
+                return True, {"text": text_response}
+
+        except Exception as e:
+            # Handle Groq API errors (including invalid model names)
+            error_msg = str(e)
+            if "model" in error_msg.lower() and "not found" in error_msg.lower():
+                return False, f"Unknown Groq model: {model}. Error: {error_msg}"
+            return False, f"Groq API error: {error_msg}"
+
     async def _generate_image_gemini(
         self,
         model: str,
@@ -998,35 +1118,43 @@ class LLMManager:
     def get_rate_limit_status(self, family: str, model: str) -> Dict[str, Any]:
         """Get current rate limit status for a model."""
         family = family.lower()
-        
+
         if family == "gemini" and model in self.dict_gemini_limits:
             limits = self.dict_gemini_limits[model]
+            calls_limit = limits[0]
+            tokens_limit = limits[1] if len(limits) > 1 else None
         elif family == "claude" and model in self.dict_claude_limits:
             limits = self.dict_claude_limits[model]
+            calls_limit = limits[0]
+            tokens_limit = limits[1] if len(limits) > 1 else None
+        elif family == "groq" and model in self.dict_groq_limits:
+            limits = self.dict_groq_limits[model]
+            calls_limit = limits["rpm"]
+            tokens_limit = limits["tpm"]
         else:
             return {"error": f"Unknown model {model} for family {family}"}
-        
+
         counters = self.counters[family][model]
-        
+
         # Clean old entries
         self._clean_old_entries(counters['calls'])
-        if len(limits) > 1:
+        if tokens_limit:
             self._clean_old_entries(counters['tokens'], is_tokens=True)
-        
+
         status = {
             "calls_used": len(counters['calls']),
-            "calls_limit": limits[0],
-            "calls_remaining": limits[0] - len(counters['calls'])
+            "calls_limit": calls_limit,
+            "calls_remaining": calls_limit - len(counters['calls'])
         }
-        
-        if len(limits) > 1:  # Has token limit
+
+        if tokens_limit:  # Has token limit
             tokens_used = sum(token_count for timestamp, token_count in counters['tokens'])
             status.update({
                 "tokens_used": tokens_used,
-                "tokens_limit": limits[1],
-                "tokens_remaining": limits[1] - tokens_used
+                "tokens_limit": tokens_limit,
+                "tokens_remaining": tokens_limit - tokens_used
             })
-        
+
         return status
     
     async def call_claude(
@@ -1039,7 +1167,7 @@ class LLMManager:
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
         """
         Convenience method to call Claude with Sonnet as default model.
-        
+
         Args:
             prompt: Text prompt
             model: Model name (defaults to Sonnet)
@@ -1057,6 +1185,125 @@ class LLMManager:
             temperature=temperature,
             return_json=return_json
         )
+
+    async def call_via_groq(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Call Groq API with the specified model (non-streaming).
+
+        Args:
+            model: Groq model name (e.g., "llama-3.3-70b-versatile", "qwen/qwen3-32b")
+            prompt: Text prompt
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            return_json: Whether to return the response as a JSON object
+        Returns:
+            Tuple of (success: bool, result: dict or error_message: str)
+        """
+        estimated_tokens = self._estimate_tokens(prompt)
+
+        # Check rate limits
+        if not self._check_rate_limits("groq", model, estimated_tokens):
+            return False, "Rate limit exceeded"
+
+        try:
+            result = await self._call_groq_with_prompt(
+                model, prompt, max_tokens, temperature, return_json
+            )
+
+            # Update counters on successful call
+            if result[0]:  # If success
+                self._update_counters("groq", model, estimated_tokens)
+
+            return result
+
+        except Exception as e:
+            return False, str(e)
+
+    async def call_via_groq_stream(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Call Groq API with the specified model (streaming, returns full accumulated text).
+
+        Args:
+            model: Groq model name (e.g., "llama-3.3-70b-versatile", "qwen/qwen3-32b")
+            prompt: Text prompt
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            return_json: Whether to return the response as a JSON object
+        Returns:
+            Tuple of (success: bool, result: dict or error_message: str)
+        """
+        estimated_tokens = self._estimate_tokens(prompt)
+
+        # Check rate limits
+        if not self._check_rate_limits("groq", model, estimated_tokens):
+            return False, "Rate limit exceeded"
+
+        try:
+            result = await self._call_groq_with_prompt_stream(
+                model, prompt, max_tokens, temperature, return_json
+            )
+
+            # Update counters on successful call
+            if result[0]:  # If success
+                self._update_counters("groq", model, estimated_tokens)
+
+            return result
+
+        except Exception as e:
+            return False, str(e)
+
+    async def call_groq(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False,
+        stream: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Convenience method to call Groq with llama-3.3-70b-versatile as default model.
+
+        Args:
+            prompt: Text prompt
+            model: Model name (defaults to llama-3.3-70b-versatile)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            return_json: Whether to return the response as a JSON object
+            stream: Whether to use streaming (default: False)
+        Returns:
+            Tuple of (success: bool, result: dict or error_message: str)
+        """
+        if stream:
+            return await self.call_via_groq_stream(
+                model=model or self.DEFAULT_GROQ_MODEL,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                return_json=return_json
+            )
+        else:
+            return await self.call_via_groq(
+                model=model or self.DEFAULT_GROQ_MODEL,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                return_json=return_json
+            )
 
 
 # Convenience function to get the singleton instance
