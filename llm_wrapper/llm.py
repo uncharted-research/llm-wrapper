@@ -30,6 +30,7 @@ class LLMManager:
         "gemini-2.5-flash": (400, 500_000),
         "gemini-2.0-flash": (800, 1_000_000),
         "gemini-2.5-flash-lite": (3000, 2_500_000),
+        "gemini-3-pro-preview": (45, 1_000_000),  # 45 calls/min, 1M tokens/min
         "imagen-3.0-generate-002": (5,)  # Only calls per minute limit
     }
     
@@ -41,6 +42,7 @@ class LLMManager:
     # Default models
     DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
     DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+    DEFAULT_GEMINI3_MODEL = "gemini-3-pro-preview"
     DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
     
     def __new__(cls):
@@ -928,7 +930,191 @@ class LLMManager:
             return False, "Unexpected error: no return path taken"
         
         return await asyncio.to_thread(sync_call)
-    
+
+    async def _call_gemini3_with_prompt(
+        self,
+        model: str,
+        prompt: str,
+        file_path: Optional[Union[str, Path]] = None,
+        image_data: Optional[bytes] = None,
+        image_mime_type: str = "image/jpeg",
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False,
+        enable_google_search: bool = False,
+        enable_url_context: bool = False,
+        thinking_level: str = "HIGH",
+        media_resolution: str = "HIGH"
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """Call Gemini 3 with extended thinking support and optional file/image input."""
+        def sync_call():
+            try:
+                # Validate thinking_level
+                valid_thinking_levels = ["HIGH", "LOW"]
+                if thinking_level not in valid_thinking_levels:
+                    return False, f"Invalid thinking_level: {thinking_level}. Valid values: {', '.join(valid_thinking_levels)}"
+
+                # Validate media_resolution
+                valid_resolutions = ["HIGH", "MEDIUM", "LOW"]
+                if media_resolution not in valid_resolutions:
+                    return False, f"Invalid media_resolution: {media_resolution}. Valid values: {', '.join(valid_resolutions)}"
+
+                # Map media_resolution to API format
+                resolution_map = {
+                    "HIGH": "MEDIA_RESOLUTION_HIGH",
+                    "MEDIUM": "MEDIA_RESOLUTION_MEDIUM",
+                    "LOW": "MEDIA_RESOLUTION_LOW"
+                }
+
+                # Build configuration
+                config_dict = {}
+                if max_tokens:
+                    config_dict['max_output_tokens'] = max_tokens
+                if temperature is not None:
+                    config_dict['temperature'] = temperature
+
+                # Gemini 3 thinking config (different from Gemini 2.x)
+                config_dict['thinking_config'] = {"thinking_level": thinking_level}
+
+                # Media resolution (new for Gemini 3)
+                config_dict['media_resolution'] = resolution_map[media_resolution]
+
+                # Add tools if any are enabled
+                tools = []
+                if enable_url_context:
+                    tools.append(types.Tool(url_context=types.UrlContext()))
+                if enable_google_search:
+                    tools.append(types.Tool(googleSearch=types.GoogleSearch()))
+                if tools:
+                    config_dict['tools'] = tools
+
+                config = types.GenerateContentConfig(**config_dict)
+
+                # Build contents based on input type
+                parts = []
+
+                # Handle file input
+                if file_path:
+                    file_path_obj = Path(file_path)
+
+                    # Determine MIME type based on file extension
+                    mime_type = "application/pdf"
+                    if file_path_obj.suffix.lower() in ['.jpg', '.jpeg']:
+                        mime_type = "image/jpeg"
+                    elif file_path_obj.suffix.lower() in ['.png']:
+                        mime_type = "image/png"
+                    elif file_path_obj.suffix.lower() in ['.webp']:
+                        mime_type = "image/webp"
+                    elif file_path_obj.suffix.lower() in ['.gif']:
+                        mime_type = "image/gif"
+                    elif file_path_obj.suffix.lower() in ['.txt']:
+                        mime_type = "text/plain"
+
+                    parts.append(Part.from_bytes(
+                        data=file_path_obj.read_bytes(),
+                        mime_type=mime_type,
+                    ))
+
+                # Handle image data input
+                elif image_data:
+                    # Validate image_data
+                    if len(image_data) == 0:
+                        return False, "Image data is empty"
+
+                    # Validate mime_type
+                    supported_mime_types = ["image/jpeg", "image/png", "image/webp", "image/gif"]
+                    if image_mime_type not in supported_mime_types:
+                        return False, f"Unsupported MIME type: {image_mime_type}. Supported types: {', '.join(supported_mime_types)}"
+
+                    parts.append(Part.from_bytes(
+                        data=image_data,
+                        mime_type=image_mime_type,
+                    ))
+
+                # Add prompt as text part
+                parts.append(types.Part.from_text(text=prompt))
+
+                # Format contents based on whether tools are enabled
+                if tools or file_path or image_data:
+                    contents = [types.Content(role="user", parts=parts)]
+                else:
+                    contents = [prompt]
+
+                response = self.gemini_client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config
+                )
+
+                # Use the helper to extract grounding info
+                extracted_info = self._extract_grounding_info(response)
+
+                if not extracted_info["text"]:
+                    return False, "No response from Gemini 3"
+
+                text_response = extracted_info["text"]
+
+                # Prepare the result based on whether grounding is enabled
+                if enable_google_search or enable_url_context:
+                    result = {
+                        "text": text_response,
+                        "sources": extracted_info["sources"],
+                        "grounding_enabled": {
+                            "google_search": enable_google_search,
+                            "url_context": enable_url_context
+                        }
+                    }
+
+                    if "search_queries" in extracted_info:
+                        result["search_queries"] = extracted_info["search_queries"]
+
+                    if extracted_info["grounding_metadata"]:
+                        result["grounding_metadata"] = extracted_info["grounding_metadata"]
+                else:
+                    result = {"text": text_response}
+
+                # Handle JSON parsing if requested
+                if return_json:
+                    try:
+                        text_response = self._strip_markdown_json(text_response)
+                        parsed_data = json.loads(text_response)
+
+                        if enable_google_search or enable_url_context:
+                            if isinstance(parsed_data, list):
+                                wrapped_response = {
+                                    "data": parsed_data,
+                                    "sources": extracted_info["sources"],
+                                    "search_queries": extracted_info.get("search_queries", []),
+                                    "grounding_enabled": {
+                                        "google_search": enable_google_search,
+                                        "url_context": enable_url_context
+                                    }
+                                }
+                                if extracted_info.get("grounding_metadata"):
+                                    wrapped_response["grounding_metadata"] = extracted_info["grounding_metadata"]
+                                return True, wrapped_response
+                            elif isinstance(parsed_data, dict):
+                                parsed_data["sources"] = extracted_info["sources"]
+                                if "search_queries" in extracted_info:
+                                    parsed_data["search_queries"] = extracted_info["search_queries"]
+                                parsed_data["grounding_enabled"] = {
+                                    "google_search": enable_google_search,
+                                    "url_context": enable_url_context
+                                }
+
+                        return True, parsed_data
+                    except json.JSONDecodeError:
+                        return True, result
+                else:
+                    return True, result
+
+            except Exception as e:
+                return False, str(e)
+
+            return False, "Unexpected error: no return path taken"
+
+        return await asyncio.to_thread(sync_call)
+
     async def _call_claude_with_prompt(
         self,
         model: str,
@@ -1185,6 +1371,72 @@ class LLMManager:
             temperature=temperature,
             return_json=return_json
         )
+
+    async def call_gemini3(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        file_path: Optional[Union[str, Path]] = None,
+        image_data: Optional[bytes] = None,
+        image_mime_type: str = "image/jpeg",
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        return_json: bool = False,
+        enable_google_search: bool = False,
+        enable_url_context: bool = False,
+        thinking_level: str = "HIGH",
+        media_resolution: str = "HIGH"
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Convenience method to call Gemini 3 with extended thinking support.
+
+        Args:
+            prompt: Text prompt
+            model: Model name (defaults to gemini-3-pro-preview)
+            file_path: Optional path to a file (PDF, image, text)
+            image_data: Optional image bytes to send directly
+            image_mime_type: MIME type for image_data (default: image/jpeg)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            return_json: Whether to return the response as a JSON object
+            enable_google_search: Enable Google Search grounding
+            enable_url_context: Enable URL context analysis
+            thinking_level: Thinking depth ("HIGH" or "LOW", default "HIGH")
+            media_resolution: Media resolution ("HIGH", "MEDIUM", or "LOW", default "HIGH")
+        Returns:
+            Tuple of (success: bool, result: dict or error_message: str)
+        """
+        model = model or self.DEFAULT_GEMINI3_MODEL
+        estimated_tokens = self._estimate_tokens(prompt)
+
+        # Check rate limits
+        if not self._check_rate_limits("gemini", model, estimated_tokens):
+            return False, "Rate limit exceeded"
+
+        try:
+            result = await self._call_gemini3_with_prompt(
+                model=model,
+                prompt=prompt,
+                file_path=file_path,
+                image_data=image_data,
+                image_mime_type=image_mime_type,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                return_json=return_json,
+                enable_google_search=enable_google_search,
+                enable_url_context=enable_url_context,
+                thinking_level=thinking_level,
+                media_resolution=media_resolution
+            )
+
+            # Update counters on successful call
+            if result[0]:  # If success
+                self._update_counters("gemini", model, estimated_tokens)
+
+            return result
+
+        except Exception as e:
+            return False, str(e)
 
     async def call_via_groq(
         self,
