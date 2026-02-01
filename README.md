@@ -14,6 +14,8 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 - **Google Search Tool**: Enable real-time web search for up-to-date information (Gemini only)
 - **URL Context Tool**: Analyze web pages directly from URLs (Gemini only)
 - **Thinking Budget**: Control reasoning process with configurable thinking budget (Gemini only)
+- **Gemini 3 Support**: Extended thinking with `thinking_level` (HIGH/LOW) and media resolution control
+- **Gemini Embeddings**: Generate text embeddings with configurable dimensions and task types
 - **Singleton Pattern**: Efficient resource management with automatic client reuse
 
 ## Installation
@@ -172,6 +174,125 @@ async def use_claude():
 asyncio.run(use_claude())
 ```
 
+### Using Gemini 3 Models
+
+Gemini 3 introduces extended thinking capabilities with a new `thinking_level` parameter:
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def use_gemini3():
+    llm = get_llm_manager()
+
+    # Basic usage with default HIGH thinking
+    success, result = await llm.call_gemini3(
+        prompt="Explain the theory of relativity",
+        thinking_level="HIGH",
+        media_resolution="HIGH"
+    )
+
+    if success:
+        print(result["text"])
+
+    # With Google Search for real-time info
+    success, result = await llm.call_gemini3(
+        prompt="What are the latest developments in AI?",
+        enable_google_search=True,
+        thinking_level="HIGH"
+    )
+
+    if success:
+        print(result["text"])
+        print("Sources:", result.get("sources", []))
+
+    # With file input
+    success, result = await llm.call_gemini3(
+        prompt="Summarize this document",
+        file_path="document.pdf",
+        thinking_level="HIGH"
+    )
+
+    # With image data
+    with open("photo.jpg", "rb") as f:
+        img_bytes = f.read()
+
+    success, result = await llm.call_gemini3(
+        prompt="Describe this image",
+        image_data=img_bytes,
+        image_mime_type="image/jpeg",
+        thinking_level="LOW"  # Faster responses
+    )
+
+asyncio.run(use_gemini3())
+```
+
+### Generating Embeddings (Gemini Only)
+
+Generate text embeddings for semantic search, clustering, classification, and more:
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def generate_embeddings():
+    llm = get_llm_manager()
+
+    # Single text embedding
+    success, result = await llm.embed_content(
+        contents="Hello world",
+        task_type="SEMANTIC_SIMILARITY",
+        output_dimensionality=3072  # 768, 1536, or 3072
+    )
+
+    if success:
+        print(f"Dimensions: {result['dimensions']}")
+        print(f"Embedding length: {len(result['embeddings'][0])}")
+
+    # Multiple texts at once
+    success, result = await llm.embed_content(
+        contents=["What is AI?", "Machine learning is a subset of AI"],
+        task_type="SEMANTIC_SIMILARITY",
+        output_dimensionality=768  # Smaller vectors for efficiency
+    )
+
+    if success:
+        print(f"Number of embeddings: {len(result['embeddings'])}")
+
+    # For code search
+    success, result = await llm.embed_content(
+        contents="def hello_world(): print('Hello')",
+        task_type="CODE_RETRIEVAL_QUERY"
+    )
+
+asyncio.run(generate_embeddings())
+```
+
+#### Embedding Parameters
+
+- `contents` (str or List[str]): Text(s) to embed
+- `model` (str, default: "gemini-embedding-001"): Embedding model to use
+- `task_type` (str, default: "SEMANTIC_SIMILARITY"): Optimize embeddings for specific use cases:
+  - `SEMANTIC_SIMILARITY`: Compare text similarity
+  - `CLASSIFICATION`: Text classification tasks
+  - `CLUSTERING`: Group similar texts
+  - `RETRIEVAL_DOCUMENT`: Index documents for search
+  - `RETRIEVAL_QUERY`: Search queries
+  - `CODE_RETRIEVAL_QUERY`: Code search queries
+  - `QUESTION_ANSWERING`: Q&A systems
+  - `FACT_VERIFICATION`: Fact-checking tasks
+- `output_dimensionality` (int, default: 3072): Vector size (768, 1536, or 3072)
+
+#### Gemini 3 Parameters
+
+- `thinking_level` (str, default: "HIGH"): Control reasoning depth
+  - `"HIGH"`: Maximum reasoning (recommended for complex tasks)
+  - `"LOW"`: Faster responses with less reasoning
+- `media_resolution` (str, default: "HIGH"): Media processing quality
+  - `"HIGH"`: Best quality for images/media
+  - `"MEDIUM"`: Balanced quality/speed
+  - `"LOW"`: Fastest processing
+
 ### Working with Images
 
 The library supports two ways to send images to Gemini models:
@@ -317,6 +438,10 @@ print(f"Gemini - Tokens remaining: {status['tokens_remaining']}")
 status = llm.get_rate_limit_status("claude", "claude-sonnet-4-20250514")
 print(f"Claude - API calls remaining: {status['calls_remaining']}")
 print(f"Claude - Tokens remaining: {status['tokens_remaining']}")
+
+# Check embedding limits
+status = llm.get_rate_limit_status("gemini_embedding", "gemini-embedding-001")
+print(f"Embeddings - API calls remaining: {status['calls_remaining']}")
 ```
 
 ## Supported Models
@@ -324,9 +449,11 @@ print(f"Claude - Tokens remaining: {status['tokens_remaining']}")
 ### Gemini Models
 
 - `gemini-2.5-pro`: 50 calls/min, 800K tokens/min
-- `gemini-2.5-flash`: 400 calls/min, 500K tokens/min  
+- `gemini-2.5-flash`: 400 calls/min, 500K tokens/min
 - `gemini-2.0-flash`: 800 calls/min, 1M tokens/min
+- `gemini-3-pro-preview`: 45 calls/min, 1M tokens/min (use with `call_gemini3`)
 - `imagen-3.0-generate-002`: 5 calls/min (image generation)
+- `gemini-embedding-001`: 1500 calls/min, 1M tokens/min (embeddings)
 
 ### Claude Models
 

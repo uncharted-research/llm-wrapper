@@ -4,7 +4,7 @@ import os
 import re
 import time
 import warnings
-from typing import Dict, Tuple, Optional, Union, Any
+from typing import Dict, List, Tuple, Optional, Union, Any
 from threading import Lock
 from collections import defaultdict, deque
 from pathlib import Path
@@ -38,12 +38,34 @@ class LLMManager:
         "claude-sonnet-4-20250514": (40, 20_000),  # Conservative limits
         "claude-opus-4-1-20250805": (40, 20_000),  # Conservative limits
     }
-    
+
+    # Gemini embedding rate limits: (calls_per_minute, tokens_per_minute)
+    dict_gemini_embedding_limits = {
+        "gemini-embedding-001": (3000, 3_000_000),  # Conservative: 3000 calls/min, 3M tokens/min
+    }
+
+    # Valid embedding task types
+    EMBEDDING_TASK_TYPES = {
+        "SEMANTIC_SIMILARITY",
+        "CLASSIFICATION",
+        "CLUSTERING",
+        "RETRIEVAL_DOCUMENT",
+        "RETRIEVAL_QUERY",
+        "CODE_RETRIEVAL_QUERY",
+        "QUESTION_ANSWERING",
+        "FACT_VERIFICATION",
+    }
+
+    # Valid embedding output dimensions
+    EMBEDDING_DIMENSIONS = {768, 1536, 3072}
+
     # Default models
     DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
     DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
     DEFAULT_GEMINI3_MODEL = "gemini-3-pro-preview"
     DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+    DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+    DEFAULT_EMBEDDING_DIMENSIONS = 3072
     
     def __new__(cls):
         if cls._instance is None:
@@ -114,6 +136,12 @@ class LLMManager:
             limits = self.dict_groq_limits[model]
             calls_limit = limits["rpm"]
             tokens_limit = limits["tpm"]
+        elif family_lower == "gemini_embedding":
+            if model not in self.dict_gemini_embedding_limits:
+                raise ValueError(f"Unknown Gemini embedding model: {model}")
+            limits = self.dict_gemini_embedding_limits[model]
+            calls_limit = limits[0]
+            tokens_limit = limits[1] if len(limits) > 1 else None
         else:
             raise ValueError(f"Family {family} not supported")
         
@@ -1300,7 +1328,125 @@ class LLMManager:
                 return False, str(e)
         
         return await asyncio.to_thread(sync_call)
-    
+
+    async def _embed_gemini(
+        self,
+        model: str,
+        contents: Union[str, List[str]],
+        task_type: Optional[str] = None,
+        output_dimensionality: Optional[int] = None
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Embed text(s) using Gemini embedding models.
+
+        Args:
+            model: Embedding model name
+            contents: Single text or list of texts to embed
+            task_type: Optional embedding task type
+            output_dimensionality: Optional output vector size
+
+        Returns:
+            Tuple of (success, result dict with embeddings or error message)
+        """
+        def sync_call():
+            try:
+                # Build config
+                config_dict = {}
+                if task_type:
+                    config_dict['task_type'] = task_type
+                if output_dimensionality:
+                    config_dict['output_dimensionality'] = output_dimensionality
+
+                config = types.EmbedContentConfig(**config_dict) if config_dict else None
+
+                response = self.gemini_client.models.embed_content(
+                    model=model,
+                    contents=contents,
+                    config=config
+                )
+
+                # Extract embeddings from response
+                if hasattr(response, 'embeddings') and response.embeddings:
+                    embeddings = []
+                    for embedding in response.embeddings:
+                        if hasattr(embedding, 'values'):
+                            embeddings.append(list(embedding.values))
+                        else:
+                            embeddings.append(list(embedding))
+
+                    return True, {
+                        "embeddings": embeddings,
+                        "model": model,
+                        "dimensions": len(embeddings[0]) if embeddings else 0,
+                        "task_type": task_type
+                    }
+                else:
+                    return False, "No embeddings in response"
+
+            except Exception as e:
+                return False, str(e)
+
+        return await asyncio.to_thread(sync_call)
+
+    async def embed_content(
+        self,
+        contents: Union[str, List[str]],
+        model: Optional[str] = None,
+        task_type: str = "SEMANTIC_SIMILARITY",
+        output_dimensionality: int = 3072
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Generate embeddings for text content using Gemini.
+
+        Args:
+            contents: Single text or list of texts to embed
+            model: Embedding model (default: gemini-embedding-001)
+            task_type: One of SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING,
+                       RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, CODE_RETRIEVAL_QUERY,
+                       QUESTION_ANSWERING, FACT_VERIFICATION
+            output_dimensionality: Size of output vector (768, 1536, or 3072; default: 3072)
+
+        Returns:
+            Tuple of (success, result dict with "embeddings" key or error message)
+            Result dict format: {"embeddings": [[float, ...], ...], "model": str, "dimensions": int, "task_type": str}
+        """
+        model = model or self.DEFAULT_EMBEDDING_MODEL
+
+        # Validate task_type
+        if task_type not in self.EMBEDDING_TASK_TYPES:
+            return False, f"Invalid task_type: {task_type}. Valid types: {', '.join(sorted(self.EMBEDDING_TASK_TYPES))}"
+
+        # Validate output_dimensionality
+        if output_dimensionality not in self.EMBEDDING_DIMENSIONS:
+            return False, f"Invalid output_dimensionality: {output_dimensionality}. Valid values: {sorted(self.EMBEDDING_DIMENSIONS)}"
+
+        # Estimate tokens for rate limiting
+        if isinstance(contents, str):
+            estimated_tokens = self._estimate_tokens(contents)
+        else:
+            estimated_tokens = sum(self._estimate_tokens(text) for text in contents)
+
+        # Check rate limits
+        if not self._check_rate_limits("gemini_embedding", model, estimated_tokens):
+            return False, "Rate limit exceeded"
+
+        try:
+            result = await self._embed_gemini(
+                model=model,
+                contents=contents,
+                task_type=task_type,
+                output_dimensionality=output_dimensionality
+            )
+
+            # Update counters on successful call
+            if result[0]:  # If success
+                self._update_counters("gemini_embedding", model, estimated_tokens)
+
+            return result
+
+        except Exception as e:
+            return False, str(e)
+
     def get_rate_limit_status(self, family: str, model: str) -> Dict[str, Any]:
         """Get current rate limit status for a model."""
         family = family.lower()
@@ -1317,6 +1463,10 @@ class LLMManager:
             limits = self.dict_groq_limits[model]
             calls_limit = limits["rpm"]
             tokens_limit = limits["tpm"]
+        elif family == "gemini_embedding" and model in self.dict_gemini_embedding_limits:
+            limits = self.dict_gemini_embedding_limits[model]
+            calls_limit = limits[0]
+            tokens_limit = limits[1] if len(limits) > 1 else None
         else:
             return {"error": f"Unknown model {model} for family {family}"}
 
