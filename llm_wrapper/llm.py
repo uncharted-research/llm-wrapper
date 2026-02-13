@@ -1196,13 +1196,15 @@ class LLMManager:
         self,
         model: str,
         prompt: str,
-        max_tokens: int = 128000,
+        max_tokens: int = 16000,
         temperature: float = 1,
-        budget_tokens: int = 128000,
         effort: str = "max",
         return_json: bool = False
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
-        """Call Claude Opus with extended thinking enabled."""
+        """Call Claude Opus with adaptive thinking enabled.
+
+        Uses streaming internally to avoid timeout on long-running requests.
+        """
         def sync_call():
             try:
                 kwargs = {
@@ -1210,29 +1212,32 @@ class LLMManager:
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "messages": [{"role": "user", "content": prompt}],
-                    "thinking": {
-                        "type": "enabled",
-                        "budget_tokens": budget_tokens
-                    },
-                    "output_config": {"effort": effort}
+                    "thinking": {"type": "adaptive"},
                 }
+                if effort != "high":
+                    kwargs["output_config"] = {"effort": effort}
 
-                message = self.claude_client.messages.create(**kwargs)
-
-                # Extract text from response content blocks
-                # With thinking enabled, response contains both thinking and text blocks
+                # Use streaming to avoid 10-minute timeout on large max_tokens
                 text_parts = []
-                thinking_text = None
-                for block in message.content:
-                    if block.type == "thinking":
-                        thinking_text = block.thinking
-                    elif block.type == "text":
-                        text_parts.append(block.text)
+                thinking_parts = []
+                with self.claude_client.messages.stream(**kwargs) as stream:
+                    for event in stream:
+                        if event.type == "content_block_start":
+                            if event.content_block.type == "thinking":
+                                thinking_parts.append("")
+                            elif event.content_block.type == "text":
+                                text_parts.append("")
+                        elif event.type == "content_block_delta":
+                            if event.delta.type == "thinking_delta":
+                                thinking_parts[-1] += event.delta.thinking
+                            elif event.delta.type == "text_delta":
+                                text_parts[-1] += event.delta.text
 
                 if not text_parts:
                     return False, "No response from Claude Opus"
 
                 text_response = "\n".join(text_parts).strip()
+                thinking_text = "\n".join(thinking_parts).strip() if thinking_parts else None
 
                 if return_json:
                     try:
@@ -1590,22 +1595,23 @@ class LLMManager:
         self,
         prompt: str,
         model: Optional[str] = None,
-        max_tokens: int = 128000,
+        max_tokens: int = 16000,
         temperature: float = 1,
-        budget_tokens: int = 128000,
         effort: str = "max",
         return_json: bool = False
     ) -> Tuple[bool, Union[Dict[str, Any], str]]:
         """
-        Call Claude Opus 4.6 with extended thinking enabled.
+        Call Claude Opus 4.6 with adaptive thinking.
+
+        Uses adaptive thinking where Claude dynamically determines when and how
+        much to reason. The effort parameter guides thinking depth.
 
         Args:
             prompt: Text prompt
             model: Model name (defaults to claude-opus-4-6)
-            max_tokens: Maximum tokens to generate (default: 128000)
-            temperature: Sampling temperature (default: 1, required for extended thinking)
-            budget_tokens: Thinking budget tokens (default: 128000)
-            effort: Output effort level (default: "max")
+            max_tokens: Maximum tokens to generate (default: 16000)
+            temperature: Sampling temperature (default: 1, required for thinking)
+            effort: Thinking effort level - "max", "high", "medium", or "low" (default: "max")
             return_json: Whether to return the response as a JSON object
         Returns:
             Tuple of (success: bool, result: dict or error_message: str)
@@ -1624,7 +1630,6 @@ class LLMManager:
                 prompt=prompt,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                budget_tokens=budget_tokens,
                 effort=effort,
                 return_json=return_json
             )

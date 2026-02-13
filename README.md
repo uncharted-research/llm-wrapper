@@ -152,16 +152,16 @@ async def use_claude():
     if success:
         print(result["text"])
     
-    # Use specific Claude model (Opus)
-    success, result = await llm.call_llm(
-        family="claude",
-        model="claude-opus-4-1-20250805",
+    # Use Claude Opus 4.6 with adaptive thinking
+    success, result = await llm.call_opus(
         prompt="Explain machine learning",
-        max_tokens=200
+        max_tokens=4096
     )
-    
+
     if success:
         print(result["text"])
+        if "thinking" in result:
+            print("Thinking:", result["thinking"])
     
     # Get JSON response from Claude
     success, result = await llm.call_claude(
@@ -177,7 +177,7 @@ asyncio.run(use_claude())
 
 ### Using Claude Opus 4.6 (Extended Thinking)
 
-Claude Opus 4.6 supports extended thinking, allowing the model to reason through complex problems before responding:
+Claude Opus 4.6 supports adaptive thinking, where the model dynamically determines when and how much to reason based on task complexity:
 
 ```python
 import asyncio
@@ -186,7 +186,7 @@ from llm_wrapper import get_llm_manager
 async def use_opus():
     llm = get_llm_manager()
 
-    # Basic usage with all defaults (max effort, 128k thinking budget)
+    # Basic usage with all defaults (max effort)
     success, result = await llm.call_opus(
         prompt="Solve this step by step: What is the integral of x^2 * e^x?"
     )
@@ -197,11 +197,10 @@ async def use_opus():
         if "thinking" in result:
             print("Thinking:", result["thinking"])
 
-    # With custom parameters
+    # With custom effort level (low = skip thinking for simple tasks)
     success, result = await llm.call_opus(
         prompt="Analyze the trade-offs of microservices vs monoliths",
         max_tokens=4096,
-        budget_tokens=32000,
         effort="low"
     )
 
@@ -218,10 +217,9 @@ asyncio.run(use_opus())
 
 - `prompt` (str): Text prompt
 - `model` (str, default: `"claude-opus-4-6"`): Model name
-- `max_tokens` (int, default: 128000): Maximum tokens to generate
-- `temperature` (float, default: 1): Sampling temperature (must be 1 for extended thinking)
-- `budget_tokens` (int, default: 128000): Thinking budget tokens
-- `effort` (str, default: `"max"`): Output effort level
+- `max_tokens` (int, default: 16000): Maximum tokens to generate
+- `temperature` (float, default: 1): Sampling temperature (must be 1 for thinking)
+- `effort` (str, default: `"max"`): Thinking effort - `"max"`, `"high"`, `"medium"`, or `"low"`
 - `return_json` (bool, default: False): Parse response as JSON
 
 ### Using Gemini 3 Models
