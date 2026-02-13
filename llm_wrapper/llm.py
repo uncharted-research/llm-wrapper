@@ -37,6 +37,7 @@ class LLMManager:
     dict_claude_limits = {
         "claude-sonnet-4-20250514": (40, 20_000),  # Conservative limits
         "claude-opus-4-1-20250805": (40, 20_000),  # Conservative limits
+        "claude-opus-4-6": (40, 20_000),  # Conservative limits
     }
 
     # Gemini embedding rate limits: (calls_per_minute, tokens_per_minute)
@@ -61,6 +62,7 @@ class LLMManager:
 
     # Default models
     DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_OPUS_MODEL = "claude-opus-4-6"
     DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
     DEFAULT_GEMINI3_MODEL = "gemini-3-pro-preview"
     DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -1190,6 +1192,68 @@ class LLMManager:
         
         return await asyncio.to_thread(sync_call)
 
+    async def _call_opus_with_prompt(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: int = 128000,
+        temperature: float = 1,
+        budget_tokens: int = 128000,
+        effort: str = "max",
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """Call Claude Opus with extended thinking enabled."""
+        def sync_call():
+            try:
+                kwargs = {
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": budget_tokens
+                    },
+                    "output_config": {"effort": effort}
+                }
+
+                message = self.claude_client.messages.create(**kwargs)
+
+                # Extract text from response content blocks
+                # With thinking enabled, response contains both thinking and text blocks
+                text_parts = []
+                thinking_text = None
+                for block in message.content:
+                    if block.type == "thinking":
+                        thinking_text = block.thinking
+                    elif block.type == "text":
+                        text_parts.append(block.text)
+
+                if not text_parts:
+                    return False, "No response from Claude Opus"
+
+                text_response = "\n".join(text_parts).strip()
+
+                if return_json:
+                    try:
+                        text_response = self._strip_markdown_json(text_response)
+                        data_dict = json.loads(text_response)
+                        return True, data_dict
+                    except json.JSONDecodeError:
+                        return True, {"text": text_response}
+                else:
+                    result = {"text": text_response}
+                    if thinking_text:
+                        result["thinking"] = thinking_text
+                    return True, result
+
+            except Exception as e:
+                return False, str(e)
+
+            return False, "Unexpected error: no return path taken"
+
+        return await asyncio.to_thread(sync_call)
+
     async def _call_groq_with_prompt(
         self,
         model: str,
@@ -1521,6 +1585,58 @@ class LLMManager:
             temperature=temperature,
             return_json=return_json
         )
+
+    async def call_opus(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        max_tokens: int = 128000,
+        temperature: float = 1,
+        budget_tokens: int = 128000,
+        effort: str = "max",
+        return_json: bool = False
+    ) -> Tuple[bool, Union[Dict[str, Any], str]]:
+        """
+        Call Claude Opus 4.6 with extended thinking enabled.
+
+        Args:
+            prompt: Text prompt
+            model: Model name (defaults to claude-opus-4-6)
+            max_tokens: Maximum tokens to generate (default: 128000)
+            temperature: Sampling temperature (default: 1, required for extended thinking)
+            budget_tokens: Thinking budget tokens (default: 128000)
+            effort: Output effort level (default: "max")
+            return_json: Whether to return the response as a JSON object
+        Returns:
+            Tuple of (success: bool, result: dict or error_message: str)
+            Result dict contains "text" key, and optionally "thinking" key with the model's reasoning.
+        """
+        model = model or self.DEFAULT_OPUS_MODEL
+        estimated_tokens = self._estimate_tokens(prompt)
+
+        # Check rate limits
+        if not self._check_rate_limits("claude", model, estimated_tokens):
+            return False, "Rate limit exceeded"
+
+        try:
+            result = await self._call_opus_with_prompt(
+                model=model,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                budget_tokens=budget_tokens,
+                effort=effort,
+                return_json=return_json
+            )
+
+            # Update counters on successful call
+            if result[0]:
+                self._update_counters("claude", model, estimated_tokens)
+
+            return result
+
+        except Exception as e:
+            return False, str(e)
 
     async def call_gemini3(
         self,

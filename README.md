@@ -11,6 +11,7 @@ A Python wrapper around LLMs (Gemini, Claude) with rate limiting and a unified i
 - **Image Data Support**: Send image bytes directly without file paths (Gemini only)
 - **Image Generation**: Support for Gemini's Imagen models
 - **Claude Integration**: Full support for Claude Opus and Sonnet models
+- **Claude Opus 4.6**: Extended thinking support with configurable thinking budget and effort level
 - **Google Search Tool**: Enable real-time web search for up-to-date information (Gemini only)
 - **URL Context Tool**: Analyze web pages directly from URLs (Gemini only)
 - **Thinking Budget**: Control reasoning process with configurable thinking budget (Gemini only)
@@ -173,6 +174,55 @@ async def use_claude():
 
 asyncio.run(use_claude())
 ```
+
+### Using Claude Opus 4.6 (Extended Thinking)
+
+Claude Opus 4.6 supports extended thinking, allowing the model to reason through complex problems before responding:
+
+```python
+import asyncio
+from llm_wrapper import get_llm_manager
+
+async def use_opus():
+    llm = get_llm_manager()
+
+    # Basic usage with all defaults (max effort, 128k thinking budget)
+    success, result = await llm.call_opus(
+        prompt="Solve this step by step: What is the integral of x^2 * e^x?"
+    )
+
+    if success:
+        print(result["text"])
+        # The model's internal reasoning is also available:
+        if "thinking" in result:
+            print("Thinking:", result["thinking"])
+
+    # With custom parameters
+    success, result = await llm.call_opus(
+        prompt="Analyze the trade-offs of microservices vs monoliths",
+        max_tokens=4096,
+        budget_tokens=32000,
+        effort="low"
+    )
+
+    # Get JSON response
+    success, result = await llm.call_opus(
+        prompt="Return a JSON object with pros and cons of Python",
+        return_json=True
+    )
+
+asyncio.run(use_opus())
+```
+
+#### Opus Parameters
+
+- `prompt` (str): Text prompt
+- `model` (str, default: `"claude-opus-4-6"`): Model name
+- `max_tokens` (int, default: 128000): Maximum tokens to generate
+- `temperature` (float, default: 1): Sampling temperature (must be 1 for extended thinking)
+- `budget_tokens` (int, default: 128000): Thinking budget tokens
+- `effort` (str, default: `"max"`): Output effort level
+- `return_json` (bool, default: False): Parse response as JSON
 
 ### Using Gemini 3 Models
 
@@ -453,12 +503,13 @@ print(f"Embeddings - API calls remaining: {status['calls_remaining']}")
 - `gemini-2.0-flash`: 800 calls/min, 1M tokens/min
 - `gemini-3-pro-preview`: 45 calls/min, 1M tokens/min (use with `call_gemini3`)
 - `imagen-3.0-generate-002`: 5 calls/min (image generation)
-- `gemini-embedding-001`: 1500 calls/min, 1M tokens/min (embeddings)
+- `gemini-embedding-001`: 3000 calls/min, 3M tokens/min (embeddings)
 
 ### Claude Models
 
-- `claude-sonnet-4-20250514`: 50 calls/min, 300K tokens/min (default)
-- `claude-opus-4-1-20250805`: 50 calls/min, 300K tokens/min
+- `claude-sonnet-4-20250514`: 40 calls/min, 20K tokens/min (default for `call_claude`)
+- `claude-opus-4-1-20250805`: 40 calls/min, 20K tokens/min
+- `claude-opus-4-6`: 40 calls/min, 20K tokens/min (default for `call_opus`, extended thinking)
 
 ## Configuration
 
