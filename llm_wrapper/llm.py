@@ -35,9 +35,9 @@ class LLMManager:
     }
     
     dict_claude_limits = {
-        "claude-sonnet-4-20250514": (40, 20_000),  # Conservative limits
-        "claude-opus-4-1-20250805": (40, 20_000),  # Conservative limits
-        "claude-opus-4-6": (40, 20_000),  # Conservative limits
+        "claude-sonnet-4-20250514": (40, 200_000),  # Conservative limits
+        "claude-opus-4-1-20250805": (40, 200_000),  # Conservative limits
+        "claude-opus-4-6": (40, 200_000),  # Conservative limits
     }
 
     # Gemini embedding rate limits: (calls_per_minute, tokens_per_minute)
