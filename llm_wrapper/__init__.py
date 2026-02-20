@@ -8,5 +8,5 @@ rate limiting automatically.
 
 from .llm import LLMManager, get_llm_manager
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["LLMManager", "get_llm_manager"]
