@@ -1043,7 +1043,7 @@ class LLMManager:
 
                 # Handle file input — prefer file_ref (pre-uploaded) over file_path (inline bytes)
                 if file_ref:
-                    parts.append(file_ref)
+                    parts.append(types.Part.from_uri(file_uri=file_ref.uri, mime_type=file_ref.mime_type))
                 elif file_path:
                     file_path_obj = Path(file_path)
 
