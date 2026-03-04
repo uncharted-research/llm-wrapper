@@ -961,11 +961,29 @@ class LLMManager:
         
         return await asyncio.to_thread(sync_call)
 
+    def upload_file(self, file_path: Union[str, Path], display_name: str = None) -> Any:
+        """Upload file to Gemini Files API for reuse across multiple calls.
+
+        Args:
+            file_path: Path to the file to upload.
+            display_name: Optional display name for the uploaded file.
+
+        Returns:
+            Uploaded file reference that can be passed as file_ref to call_gemini3().
+        """
+        file_path_obj = Path(file_path)
+        uploaded = self.gemini_client.files.upload(
+            file=file_path_obj,
+            config={"display_name": display_name or file_path_obj.name}
+        )
+        return uploaded
+
     async def _call_gemini3_with_prompt(
         self,
         model: str,
         prompt: str,
         file_path: Optional[Union[str, Path]] = None,
+        file_ref: Any = None,
         image_data: Optional[bytes] = None,
         image_mime_type: str = "image/jpeg",
         max_tokens: Optional[int] = None,
@@ -1023,8 +1041,10 @@ class LLMManager:
                 # Build contents based on input type
                 parts = []
 
-                # Handle file input
-                if file_path:
+                # Handle file input — prefer file_ref (pre-uploaded) over file_path (inline bytes)
+                if file_ref:
+                    parts.append(file_ref)
+                elif file_path:
                     file_path_obj = Path(file_path)
 
                     # Determine MIME type based on file extension
@@ -1065,7 +1085,7 @@ class LLMManager:
                 parts.append(types.Part.from_text(text=prompt))
 
                 # Format contents based on whether tools are enabled
-                if tools or file_path or image_data:
+                if tools or file_ref or file_path or image_data:
                     contents = [types.Content(role="user", parts=parts)]
                 else:
                     contents = [prompt]
@@ -1648,6 +1668,7 @@ class LLMManager:
         prompt: str,
         model: Optional[str] = None,
         file_path: Optional[Union[str, Path]] = None,
+        file_ref: Any = None,
         image_data: Optional[bytes] = None,
         image_mime_type: str = "image/jpeg",
         max_tokens: Optional[int] = None,
@@ -1664,7 +1685,8 @@ class LLMManager:
         Args:
             prompt: Text prompt
             model: Model name (defaults to gemini-3-pro-preview)
-            file_path: Optional path to a file (PDF, image, text)
+            file_path: Optional path to a file (PDF, image, text) — uploaded inline each call
+            file_ref: Optional pre-uploaded file reference from upload_file() — avoids re-upload
             image_data: Optional image bytes to send directly
             image_mime_type: MIME type for image_data (default: image/jpeg)
             max_tokens: Maximum tokens to generate
@@ -1689,6 +1711,7 @@ class LLMManager:
                 model=model,
                 prompt=prompt,
                 file_path=file_path,
+                file_ref=file_ref,
                 image_data=image_data,
                 image_mime_type=image_mime_type,
                 max_tokens=max_tokens,
