@@ -30,7 +30,7 @@ class LLMManager:
         "gemini-2.5-flash": (1000, 2_500_000),
         "gemini-2.0-flash": (800, 1_000_000),
         "gemini-2.5-flash-lite": (3000, 2_500_000),
-        "gemini-3-pro-preview": (100, 2_000_000),  # 45 calls/min, 1M tokens/min
+        "gemini-3.1-pro-preview": (500, 2_000_000),  # 45 calls/min, 1M tokens/min
         "imagen-3.0-generate-002": (5,)  # Only calls per minute limit
     }
     
@@ -64,7 +64,7 @@ class LLMManager:
     DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
     DEFAULT_OPUS_MODEL = "claude-opus-4-6"
     DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-    DEFAULT_GEMINI3_MODEL = "gemini-3-pro-preview"
+    DEFAULT_GEMINI3_MODEL = "gemini-3.1-pro-preview"
     DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
     DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
     DEFAULT_EMBEDDING_DIMENSIONS = 3072
@@ -1022,7 +1022,9 @@ class LLMManager:
                     config_dict['temperature'] = temperature
 
                 # Gemini 3 thinking config (different from Gemini 2.x)
-                config_dict['thinking_config'] = {"thinking_level": thinking_level}
+                config_dict['thinking_config'] = types.ThinkingConfig(
+                    thinking_level=thinking_level
+                )
 
                 # Media resolution (new for Gemini 3)
                 config_dict['media_resolution'] = resolution_map[media_resolution]
@@ -1684,7 +1686,7 @@ class LLMManager:
 
         Args:
             prompt: Text prompt
-            model: Model name (defaults to gemini-3-pro-preview)
+            model: Model name (defaults to gemini-3.1-pro-preview)
             file_path: Optional path to a file (PDF, image, text) — uploaded inline each call
             file_ref: Optional pre-uploaded file reference from upload_file() — avoids re-upload
             image_data: Optional image bytes to send directly
