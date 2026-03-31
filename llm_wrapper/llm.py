@@ -28,10 +28,12 @@ class LLMManager:
     dict_gemini_limits = {
         "gemini-2.5-pro": (100, 2_000_000),
         "gemini-2.5-flash": (1000, 2_500_000),
-        "gemini-2.0-flash": (800, 1_000_000),
-        "gemini-2.5-flash-lite": (3000, 2_500_000),
+        "gemini-2.0-flash": (1000, 1_000_000),
+        "gemini-2.5-flash-lite": (5000, 2_500_000),
+        "gemini-3-flash-preview": (5000, 2_500_000),
         "gemini-3.1-pro-preview": (500, 2_000_000),  # 45 calls/min, 1M tokens/min
         "imagen-3.0-generate-002": (5,)  # Only calls per minute limit
+        
     }
     
     dict_claude_limits = {
